@@ -320,7 +320,12 @@ typedef struct {
     int ok;
 } IBMLayout;
 
-int ibm_session_env(IBMSession *s);                /* reads env vars; never prints secrets */
+int ibm_session_env(IBMSession *s);                /* stored file, then env overrides; never prints secrets */
+int cred_default_path(char *buf, size_t n);
+int cred_load(const char *path, IBMSession *s);
+int cred_store(const char *path, const char *api_key, const char *crn, const char *url, const char *version);
+void cred_mask(const char *secret, char *out, size_t n);
+int cmd_auth(int argc, char **argv);
 int ibm_session_authenticate(IBMSession *s);       /* IAM API-key exchange */
 int ibm_http(IBMSession *s, const char *method, const char *path, const char *body, char **resp, long *status);
 int ibm_list_backends(IBMSession *s, IBMBackendInfo **out, int *nout);

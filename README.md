@@ -42,7 +42,21 @@ and its coefficient, so the job can be evaluated later without recomputation.
 
 ### Credentials
 
-Read from the environment only, never printed or stored:
+Enter them once from the CLI:
+
+```bash
+./build/qchem-vqe auth login          # hidden prompt for the API key, then the instance CRN
+./build/qchem-vqe auth status         # where credentials come from; the key is masked
+./build/qchem-vqe auth logout         # delete the stored file
+```
+
+Non-interactive use: `printf '%s' "$KEY" | ./build/qchem-vqe auth login --api-key-stdin --crn CRN`.
+The API key is never accepted as a command-line argument. `auth login` checks the key
+with IBM Cloud IAM before saving; `--no-verify` skips that check.
+
+Stored at `$QCHEM_VQE_CREDENTIALS`, or `$XDG_CONFIG_HOME/qchem-vqe/ibm_credentials`,
+or `~/.config/qchem-vqe/ibm_credentials` (directory `0700`, file `0600`). Plaintext on
+disk, so protect that file like any other secret. Environment variables override it:
 
 - `IBM_QUANTUM_API_KEY` — IBM Cloud API key (exchanged for an IAM bearer token)
 - `IBM_QUANTUM_CRN` — Quantum instance CRN (`Service-CRN` header)

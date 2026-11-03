@@ -441,7 +441,8 @@ int main(int argc, char **argv)
                 "  vqe --mode local [--maxeval N] [--electrons 2 --orbitals 6]\n"
                 "  hardware list | inspect [--backend NAME] | preflight [--backend NAME]\n"
                 "  vqe --mode hardware [--submit [--yes]]\n"
-                "  job status JOB_ID | job results JOB_ID\n");
+                "  job status JOB_ID | job results JOB_ID\n"
+                "  auth login | auth status | auth logout     IBM credentials (hidden prompt)\n");
         return 1;
     }
     const char *cmd = argv[1];
@@ -452,6 +453,7 @@ int main(int argc, char **argv)
     else if (strcmp(cmd, "vqe") == 0) rc = cmd_vqe(argc - 2, argv + 2);
     else if (strcmp(cmd, "hardware") == 0) rc = cmd_hardware(argc - 2, argv + 2);
     else if (strcmp(cmd, "job") == 0) rc = cmd_job(argc - 2, argv + 2);
+    else if (strcmp(cmd, "auth") == 0) rc = cmd_auth(argc - 2, argv + 2);
     else { fprintf(stderr, "unknown command '%s'\n", cmd); rc = 1; }
     return rc;
 }

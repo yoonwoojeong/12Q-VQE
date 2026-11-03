@@ -46,7 +46,7 @@ static int get_session(IBMSession *s)
 {
     if (ibm_session_env(s) != 0) return -1;
     if (ibm_session_authenticate(s) != 0) {
-        fprintf(stderr, "error: IBM IAM authentication failed (check IBM_QUANTUM_API_KEY)\n");
+        fprintf(stderr, "error: IBM IAM authentication failed (check the key with `qchem-vqe auth status`)\n");
         return -1;
     }
     return 0;
