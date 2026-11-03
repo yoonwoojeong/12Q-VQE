@@ -21,7 +21,9 @@ param(
     [string]$Distro = 'Ubuntu'
 )
 
-$ErrorActionPreference = 'Stop'
+# Not 'Stop': Windows PowerShell 5.1 turns any stderr line of a native command
+# (wsl.exe warnings included) into a terminating error. Exit codes are checked below.
+$ErrorActionPreference = 'Continue'
 
 function Stop-With([string]$Message) {
     Write-Host "error: $Message" -ForegroundColor Red
@@ -41,7 +43,11 @@ if ($names -notcontains $Distro) {
 
 # 3. Repository path as seen from WSL (the script lives in <repo>\scripts)
 $repoWin = Split-Path -Parent $PSScriptRoot
-$repoWsl = (wsl.exe -d $Distro -- wslpath -a -u "$repoWin" 2>$null).Trim()
+# --exec runs the program directly instead of through the Linux shell, which would
+# strip backslashes and re-split arguments. Forward slashes are a second safeguard.
+$repoWinFwd = $repoWin -replace '\\', '/'
+$repoWsl = (wsl.exe -d $Distro --exec wslpath -a -u $repoWinFwd 2>$null)
+if ($repoWsl) { $repoWsl = "$repoWsl".Trim() }
 if ($LASTEXITCODE -ne 0 -or -not $repoWsl) {
     Stop-With "could not convert '$repoWin' to a WSL path."
 }
@@ -53,7 +59,7 @@ Write-Host "Running the quickstart in $Distro at $repoWsl" -ForegroundColor Cyan
 
 # 4. The same one-line quickstart as the README (Ubuntu/Debian packages, libcint, build, tests)
 $quickstart = 'sudo apt-get update && sudo apt-get install -y build-essential curl unzip zstd libopenblas-dev liblapacke-dev libnlopt-dev libcjson-dev libcurl4-openssl-dev && make fetch-libcint && make && make test'
-wsl.exe -d $Distro --cd $repoWsl -- bash -lc $quickstart
+wsl.exe -d $Distro --cd $repoWsl --exec bash -lc $quickstart
 if ($LASTEXITCODE -ne 0) {
     Stop-With "the quickstart failed inside $Distro (exit code $LASTEXITCODE). See the output above."
 }
