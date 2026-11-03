@@ -41,7 +41,9 @@ if ($names -notcontains $Distro) {
 
 # 3. Repository path as seen from WSL (the script lives in <repo>\scripts)
 $repoWin = Split-Path -Parent $PSScriptRoot
-$repoWsl = (wsl.exe -d $Distro -- wslpath -a -u "$repoWin" 2>$null).Trim()
+# Forward slashes: wsl.exe drops backslashes from its arguments, which breaks the path.
+$repoWinFwd = $repoWin -replace '\\', '/'
+$repoWsl = (wsl.exe -d $Distro -- wslpath -a -u $repoWinFwd 2>$null).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $repoWsl) {
     Stop-With "could not convert '$repoWin' to a WSL path."
 }
