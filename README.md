@@ -9,10 +9,22 @@ Estimator V2 jobs with OpenQASM 3 circuits.
 Nothing in this repository has been run on IBM hardware yet. See
 [Status](#status-and-limitations).
 
+## Quickstart
+
+On Ubuntu/Debian, from a clean checkout, this one line installs the system packages,
+fetches libcint, builds, and runs the test suite:
+
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential curl unzip zstd libopenblas-dev liblapacke-dev libnlopt-dev libcjson-dev libcurl4-openssl-dev && make fetch-libcint && make && make test
+```
+
+The binary is then at `./build/qchem-vqe`. Continue with the commands below.
+
 ## Build
 
-Requirements: GCC (C17), `liblapacke-dev`, `libopenblas-dev`, `libnlopt-dev`,
-`libcjson-dev`, `libcurl4-openssl-dev`, `zstd`, `unzip`, `curl`.
+Requirements: GCC (C17) and `make`, `liblapacke-dev`, `libopenblas-dev`, `libnlopt-dev`,
+`libcjson-dev`, `libcurl4-openssl-dev`, `zstd`, `unzip`, `curl`. The quickstart line
+above installs all of them.
 
 ```bash
 make fetch-libcint   # libcint 6.1.3 from conda-forge into third_party/libcint (not packaged by Ubuntu)
