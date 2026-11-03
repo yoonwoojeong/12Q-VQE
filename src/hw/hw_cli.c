@@ -26,6 +26,8 @@ typedef struct {
     int candidates;
     char job_id[128];
     int yes;
+    int ansatz_uccsd;   /* 1: deep UCCSD circuit; 0 (default): shallow Givens preparation */
+    double gtrunc;      /* natural-orbital weight that may be dropped by the Givens circuit */
 } HwOpts;
 
 static void hw_opts_parse(int argc, char **argv, HwOpts *o)
@@ -34,7 +36,16 @@ static void hw_opts_parse(int argc, char **argv, HwOpts *o)
     o->precision = 0.02;
     o->bond = 0.735;
     o->candidates = 8;
+    o->gtrunc = 1e-4;
     for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--ansatz") == 0 && i + 1 < argc) {
+            const char *a = argv[++i];
+            if (strcmp(a, "uccsd") == 0) o->ansatz_uccsd = 1;
+            else if (strcmp(a, "givens") == 0) o->ansatz_uccsd = 0;
+            else qc_die("--ansatz must be 'givens' or 'uccsd'");
+            continue;
+        }
+        if (strcmp(argv[i], "--givens-trunc") == 0 && i + 1 < argc) { o->gtrunc = atof(argv[++i]); continue; }
         if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) snprintf(o->backend, sizeof o->backend, "%s", argv[++i]);
         else if (strcmp(argv[i], "--precision") == 0 && i + 1 < argc) o->precision = atof(argv[++i]);
         else if (strcmp(argv[i], "--yes") == 0) o->yes = 1;
@@ -140,8 +151,41 @@ static void quality_estimate(const IBMCalibration *cal, const Circuit *native, c
         if (!isnan(cal->t2_us[q]) && cal->t2_us[q] < t2) t2 = cal->t2_us[q];
     }
     *fid = f;
-    *dur_us = circ_depth(native) * (len_n ? len_s / len_n : 60.0) / 1000.0;
+    (void)len_n;
+    (void)len_s;
+    *dur_us = circ_duration_ns(native, cal) / 1000.0;
     *min_t2_us = t2 < 1e300 ? t2 : NAN;
+}
+
+/* Logical circuit that prepares the optimised VQE state.
+   givens (default): natural-orbital Givens preparation of the UCCSD state, verified on the simulator.
+   uccsd: the UCCSD circuit itself. *e_circ is the noiseless energy of the returned circuit. */
+static void build_logical_circuit(const HwOpts *o, const UCCSD *u, const double *theta, const PauliSum *ham,
+                                  Circuit *out, double *e_circ, double *fidelity)
+{
+    StateVec target, v;
+    sv_init(&target, u->nq);
+    sv_init(&v, u->nq);
+    uccsd_prepare(u, theta, &target);
+    if (o->ansatz_uccsd) {
+        uccsd_circuit(u, theta, out);
+        *fidelity = 1.0;
+        printf("  ansatz            : UCCSD circuit (%d excitations)\n", u->nexc);
+    } else {
+        GivensInfo gi;
+        givens_state_circuit(&target, u->nq, o->gtrunc, out, &gi);
+        *fidelity = gi.fidelity;
+        printf("  ansatz            : Givens preparation of the optimised UCCSD state\n");
+        printf("                      %d of %d natural-orbital pairs (weight kept %.8f), %d pair + %d orbital rotations\n",
+               gi.r, u->nq / 2, gi.kept_weight, gi.n_pair_rot, gi.n_givens);
+        printf("                      fidelity with the VQE state on the simulator: %.8f\n", gi.fidelity);
+        if (gi.fidelity < 0.999) qc_die("Givens circuit fidelity %.6f is below 0.999; lower --givens-trunc", gi.fidelity);
+    }
+    circ_simulate(out, &v);
+    *e_circ = sv_expect_sum(&v, ham);
+    printf("  noiseless energy  : %.10f Eh for this circuit (VQE state %.10f Eh)\n", *e_circ, sv_expect_sum(&target, ham));
+    sv_free(&target);
+    sv_free(&v);
 }
 
 /* ---------- hardware list / inspect / preflight ---------- */
@@ -240,7 +284,8 @@ static int cmd_inspect(const HwOpts *o, int preflight)
             printf("  (no results/vqe_local_CAS2_6.json: using theta=0 for the cost estimate)\n");
         }
         Circuit logical, native;
-        uccsd_circuit(&u, theta, &logical);
+        double e_circ_pf, fid_pf;
+        build_logical_circuit(o, &u, theta, &cs.fh.ham, &logical, &e_circ_pf, &fid_pf);
         IBMLayout l2 = lay;
         layout_compile(&logical, &cal, &l2, &native);
         int ncz = circ_count_kind(&native, G_CZ);
@@ -260,12 +305,12 @@ static int cmd_inspect(const HwOpts *o, int preflight)
             double r = isnan(cal.readout_err[l2.subset[i]]) ? 0.02 : cal.readout_err[l2.subset[i]];
             fid *= 1.0 - r;
         }
-        double tns = circ_depth(&native) * (len_n ? len_s / len_n : 60.0);
+        double tns = circ_duration_ns(&native, &cal);
         printf("== preflight (circuit on this layout, theta from results/vqe_local_CAS2_6.json)\n");
         printf("  logical gates      : %d (CX %d, depth %d)\n", logical.ng, circ_count_kind(&logical, G_CX), circ_depth(&logical));
         printf("  routing SWAPs      : %d (3 CZ each)\n", l2.nswaps);
         printf("  native gates       : %d, CZ %d, native depth %d\n", native.ng, ncz, circ_depth(&native));
-        printf("  est. duration      : %.1f us (depth x mean CZ length)\n", tns / 1000.0);
+        printf("  est. duration      : %.1f us (timed critical path: rz virtual, calibrated sx/cz lengths)\n", tns / 1000.0);
         double min_t1 = 1e9, min_t2 = 1e9;
         for (int i = 0; i < l2.nsubset; i++) {
             int q = l2.subset[i];
@@ -377,6 +422,9 @@ static int cmd_job_results(const HwOpts *o)
     double loc = cJSON_GetObjectItem(ref, "vqe_local_Eh")->valuedouble;
     double rhf = cJSON_GetObjectItem(ref, "rhf_Eh")->valuedouble;
     printf("  QPU energy (CAS(2,6)) : %.8f +/- %.8f Eh  (independent-term error propagation)\n", E, sigma);
+    cJSON *nc = cJSON_GetObjectItem(ref, "noiseless_circuit_Eh");
+    if (cJSON_IsNumber(nc))
+        printf("  submitted circuit     : %.8f Eh noiseless  QPU - noiseless = %+.6f Eh\n", nc->valuedouble, E - nc->valuedouble);
     printf("  local VQE             : %.8f Eh   QPU - local = %+.6f Eh\n", loc, E - loc);
     printf("  CAS-FCI reference     : %.8f Eh   QPU - FCI   = %+.6f Eh\n", fci, E - fci);
     printf("  RHF (full basis)      : %.8f Eh\n", rhf);
@@ -460,7 +508,8 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     cJSON_Delete(lj);
 
     Circuit logical;
-    uccsd_circuit(&u, theta, &logical);
+    double e_circ = 0.0, circ_fid = 1.0;
+    build_logical_circuit(&o, &u, theta, &cs.fh.ham, &logical, &e_circ, &circ_fid);
 
     IBMSession s;
     if (get_session(&s) != 0) return 1;
@@ -544,6 +593,9 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     cJSON *fin = cJSON_CreateIntArray(lay.final_pos, NLOG);
     cJSON_AddItemToObject(rec, "final_physical_positions", fin);
     cJSON_AddNumberToObject(rec, "layout_error_score", lay.score);
+    cJSON_AddStringToObject(rec, "ansatz", o.ansatz_uccsd ? "uccsd" : "givens");
+    if (!o.ansatz_uccsd) cJSON_AddNumberToObject(rec, "givens_truncation", o.gtrunc);
+    cJSON_AddNumberToObject(rec, "circuit_fidelity_vs_vqe_state", circ_fid);
     cJSON *ob = cJSON_AddArrayToObject(rec, "observables");
     for (int t = 0; t < nobs; t++) {
         cJSON *e = cJSON_CreateObject();
@@ -555,6 +607,7 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     cJSON_AddNumberToObject(ref, "rhf_Eh", rhf_E);
     cJSON_AddNumberToObject(ref, "fci_Eh", fci_E);
     cJSON_AddNumberToObject(ref, "vqe_local_Eh", local_E);
+    cJSON_AddNumberToObject(ref, "noiseless_circuit_Eh", e_circ);
     char *meta = results_metadata_json();
     cJSON_AddItemToObject(rec, "metadata", cJSON_Parse(meta));
     free(meta);

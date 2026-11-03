@@ -293,6 +293,7 @@ int ibm_calibration_parse(const char *cfg_json, const char *props_json, IBMCalib
     memset(cal, 0, sizeof *cal);
     for (int q = 0; q < IBM_MAX_QUBIT; q++) {
         cal->readout_err[q] = cal->sx_err[q] = cal->x_err[q] = NAN;
+        cal->sx_len_ns[q] = NAN;
         cal->t1_us[q] = cal->t2_us[q] = NAN;
     }
     cJSON *cfg = cJSON_Parse(cfg_json);
@@ -370,7 +371,7 @@ int ibm_calibration_parse(const char *cfg_json, const char *props_json, IBMCalib
             int e = find_edge(cal, qa, qb);
             if (e >= 0) { cal->edge_err[e] = err; cal->edge_len_ns[e] = len; }
         } else if ((strcmp(gn->valuestring, "sx") == 0 || strcmp(gn->valuestring, "x") == 0) && qa >= 0 && qa < IBM_MAX_QUBIT) {
-            if (strcmp(gn->valuestring, "sx") == 0) cal->sx_err[qa] = err;
+            if (strcmp(gn->valuestring, "sx") == 0) { cal->sx_err[qa] = err; cal->sx_len_ns[qa] = len; }
             else cal->x_err[qa] = err;
         }
     }
