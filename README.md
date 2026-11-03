@@ -20,6 +20,26 @@ make                 # builds build/qchem-vqe
 make test            # scientific validation tests
 ```
 
+## Windows (PowerShell)
+
+The program uses POSIX APIs, so on Windows it runs inside WSL (Ubuntu). From the repository
+root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\quickstart-wsl.ps1
+```
+
+The script checks for WSL and Ubuntu, then runs the Ubuntu quickstart inside WSL. If WSL is
+missing, run this once in an elevated PowerShell, reboot, then run the script again:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Afterwards, run the program inside WSL, for example
+`wsl --cd <repo path in WSL> -- ./build/qchem-vqe rhf`. Credentials stored with `auth login`
+live in the Linux home of the WSL distribution, not in Windows.
+
 ## Commands
 
 ```bash
