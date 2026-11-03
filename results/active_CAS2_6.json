@@ -1,0 +1,26 @@
+{
+	"scope":	"CAS active space (not full basis)",
+	"basis":	"cc-pVQZ",
+	"bond_angstrom":	0.735,
+	"active_electrons":	2,
+	"active_orbitals":	6,
+	"active_spin_orbitals":	12,
+	"first_mo":	0,
+	"inactive_doubly_occupied":	0,
+	"qubits":	12,
+	"pauli_terms":	327,
+	"rhf_full_basis_Eh":	-1.1334934589979335,
+	"active_space_hf_Eh":	-1.1334934589979326,
+	"fci_cas_Eh":	-1.1489029773276092,
+	"fci_pauli_restricted_Eh":	-1.1489029773276069,
+	"validation_passed":	1,
+	"validation_comm_norm":	3.0892461286969315e-14,
+	"validation_herm_err":	2.1316282072803006e-14,
+	"validation_hf_energy_err":	2.2204460492503131e-15,
+	"metadata":	{
+		"program":	"qchem-vqe",
+		"version":	"0.1.0",
+		"git_revision":	"fe16ee5",
+		"timestamp_utc":	"2026-11-03T09:20:57Z"
+	}
+}

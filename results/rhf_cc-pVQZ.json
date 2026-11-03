@@ -1,0 +1,15 @@
+{
+	"scope":	"full-basis RHF (not active space)",
+	"basis":	"cc-pVQZ",
+	"nao":	60,
+	"bond_angstrom":	0.735,
+	"rhf_energy_Eh":	-1.1334934589979335,
+	"nuclear_repulsion_Eh":	0.71996899442585027,
+	"iterations":	8,
+	"metadata":	{
+		"program":	"qchem-vqe",
+		"version":	"0.1.0",
+		"git_revision":	"fe16ee5",
+		"timestamp_utc":	"2026-11-03T09:20:57Z"
+	}
+}
