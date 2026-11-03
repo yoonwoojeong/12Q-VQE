@@ -272,6 +272,14 @@ static double num_of(cJSON *o, const char *key, double dflt)
     return cJSON_IsNumber(v) ? v->valuedouble : dflt;
 }
 
+/* Qubit index from a JSON value: real backends send numbers, the OpenAPI schema says strings. */
+static int json_qubit(const cJSON *v)
+{
+    if (cJSON_IsNumber(v)) return v->valueint;
+    if (cJSON_IsString(v) && v->valuestring) return atoi(v->valuestring);
+    return -1;
+}
+
 static int find_edge(const IBMCalibration *cal, int a, int b)
 {
     for (int e = 0; e < cal->nedge; e++)
@@ -349,8 +357,8 @@ int ibm_calibration_parse(const char *cfg_json, const char *props_json, IBMCalib
         cJSON *gp = cJSON_GetObjectItem(g, "parameters");
         if (!cJSON_IsString(gn) || !cJSON_IsArray(gq)) continue;
         int nq = cJSON_GetArraySize(gq);
-        int qa = nq > 0 ? atoi(cJSON_GetArrayItem(gq, 0)->valuestring) : -1;
-        int qb = nq > 1 ? atoi(cJSON_GetArrayItem(gq, 1)->valuestring) : -1;
+        int qa = nq > 0 ? json_qubit(cJSON_GetArrayItem(gq, 0)) : -1;
+        int qb = nq > 1 ? json_qubit(cJSON_GetArrayItem(gq, 1)) : -1;
         double err = NAN, len = NAN;
         for (cJSON *p = gp ? gp->child : NULL; p; p = p->next) {
             cJSON *pn = cJSON_GetObjectItem(p, "name");
