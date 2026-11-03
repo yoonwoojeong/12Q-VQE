@@ -1,0 +1,4 @@
+# Keep LF line endings on every platform. Git for Windows otherwise checks files out
+# with CRLF, and shell scripts then fail inside WSL ("set: Illegal option -").
+* text=auto eol=lf
+*.ps1 text eol=crlf

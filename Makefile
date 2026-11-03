@@ -19,7 +19,7 @@ TEST_BIN := $(TESTS:tests/%.c=build/tests/%)
 all: build/qchem-vqe
 
 fetch-libcint:
-	sh scripts/fetch_libcint.sh
+	tr -d '\r' < scripts/fetch_libcint.sh | sh
 
 build/obj/%.o: src/%.c include/qchem.h
 	@mkdir -p $(dir $@)
