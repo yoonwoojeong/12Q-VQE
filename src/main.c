@@ -457,7 +457,8 @@ int main(int argc, char **argv)
                 "  hardware list | inspect [--backend NAME] | preflight [--backend NAME]\n"
                 "  vqe --mode hardware [--submit [--yes]]\n"
                 "  job status JOB_ID | job results JOB_ID\n"
-                "  auth login | auth status | auth logout     IBM credentials (hidden prompt)\n");
+                "  auth login | auth status | auth logout     IBM credentials (hidden prompt)\n"
+                "  experiment plan|run [CONFIG] | experiment results JOB_ID   controlled QPU experiment\n");
         return 1;
     }
     const char *cmd = argv[1];
@@ -469,6 +470,7 @@ int main(int argc, char **argv)
     else if (strcmp(cmd, "hardware") == 0) rc = cmd_hardware(argc - 2, argv + 2);
     else if (strcmp(cmd, "job") == 0) rc = cmd_job(argc - 2, argv + 2);
     else if (strcmp(cmd, "auth") == 0) rc = cmd_auth(argc - 2, argv + 2);
+    else if (strcmp(cmd, "experiment") == 0) rc = cmd_experiment(argc - 2, argv + 2);
     else { fprintf(stderr, "unknown command '%s'\n", cmd); rc = 1; }
     return rc;
 }

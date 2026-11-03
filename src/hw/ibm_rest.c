@@ -382,35 +382,50 @@ int ibm_calibration_parse(const char *cfg_json, const char *props_json, IBMCalib
 
 /* ---- jobs ---- */
 
-int ibm_job_submit(IBMSession *s, const char *backend, const char *qasm, const char *const *labels, int nlabels,
-                   double precision, char **resp)
+/* Estimator V2 job with several PUBs (one per circuit), all in one job so they share the
+   backend, calibration window and options. labels[p] holds the observables of PUB p. */
+int ibm_job_submit_pubs(IBMSession *s, const char *backend, const char *const *qasms, int npubs,
+                        const char *const *const *labels, int nlabels, double precision,
+                        int resilience_level, int seed, char **resp)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "program_id", "estimator");
     cJSON_AddStringToObject(root, "backend", backend);
     cJSON *params = cJSON_AddObjectToObject(root, "params");
     cJSON *pubs = cJSON_AddArrayToObject(params, "pubs");
-    cJSON *pub = cJSON_CreateArray();
-    cJSON_AddItemToArray(pub, cJSON_CreateString(qasm));
-    cJSON *obs = cJSON_CreateArray();
-    for (int i = 0; i < nlabels; i++) cJSON_AddItemToArray(obs, cJSON_CreateString(labels[i]));
-    cJSON_AddItemToArray(pub, obs);
-    cJSON_AddItemToArray(pubs, pub);
+    for (int p = 0; p < npubs; p++) {
+        cJSON *pub = cJSON_CreateArray();
+        cJSON_AddItemToArray(pub, cJSON_CreateString(qasms[p]));
+        cJSON *obs = cJSON_CreateArray();
+        for (int i = 0; i < nlabels; i++) cJSON_AddItemToArray(obs, cJSON_CreateString(labels[p][i]));
+        cJSON_AddItemToArray(pub, obs);
+        cJSON_AddItemToArray(pubs, pub);
+    }
     cJSON_AddNumberToObject(params, "version", 2);
-    cJSON_AddNumberToObject(params, "resilience_level", 1);
+    cJSON_AddNumberToObject(params, "resilience_level", resilience_level);
     cJSON *opts = cJSON_AddObjectToObject(params, "options");
     cJSON_AddNumberToObject(opts, "default_precision", precision);
+    if (seed >= 0) cJSON_AddNumberToObject(opts, "seed_estimator", seed);
     char *body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     long code = 0;
-    int rc = ibm_http(s, "POST", "/jobs", body, resp, &code);
+    char *r = NULL;
+    int rc = ibm_http(s, "POST", "/jobs", body, &r, &code);
     free(body);
     if (rc != 0 || (code != 200 && code != 201)) {
-        fprintf(stderr, "error: job submission failed (HTTP %ld)\n", code);
-        if (resp && *resp) fprintf(stderr, "server said: %.400s\n", *resp);
+        ibm_report_http_error(s, "POST", "/jobs", code, r);
+        if (resp) *resp = r; else free(r);
         return -1;
     }
+    if (resp) *resp = r; else free(r);
     return 0;
+}
+
+int ibm_job_submit(IBMSession *s, const char *backend, const char *qasm, const char *const *labels, int nlabels,
+                   double precision, char **resp)
+{
+    const char *const *lab[1] = {labels};
+    return ibm_job_submit_pubs(s, backend, &qasm, 1, lab, nlabels, precision, 1, -1, resp);
 }
 
 int ibm_job_get(IBMSession *s, const char *job_id, char **json)

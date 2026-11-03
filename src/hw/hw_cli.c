@@ -53,7 +53,7 @@ static void hw_opts_parse(int argc, char **argv, HwOpts *o)
     }
 }
 
-static int get_session(IBMSession *s)
+int hw_get_session(IBMSession *s)
 {
     if (ibm_session_env(s) != 0) return -1;
     if (ibm_session_authenticate(s) != 0) {
@@ -129,7 +129,7 @@ static void print_layout(const IBMCalibration *cal, const IBMLayout *lay)
 
 /* Heuristic quality of a compiled circuit: product of (1 - error) over CZ gates and
    readout of the layout qubits, and runtime as depth x mean CZ length. Not a measurement. */
-static void quality_estimate(const IBMCalibration *cal, const Circuit *native, const IBMLayout *lay,
+void hw_quality_estimate(const IBMCalibration *cal, const Circuit *native, const IBMLayout *lay,
                              double *fid, double *dur_us, double *min_t2_us)
 {
     double f = 1.0, len_s = 0.0, len_n = 0.0;
@@ -194,7 +194,7 @@ static int cmd_list(const HwOpts *o)
 {
     (void)o;
     IBMSession s;
-    if (get_session(&s) != 0) return 1;
+    if (hw_get_session(&s) != 0) return 1;
     IBMBackendInfo *bi = NULL;
     int nb = 0;
     if (ibm_list_backends(&s, &bi, &nb) != 0) return 1;
@@ -219,7 +219,7 @@ static void save_calibration_snapshot(const char *backend, const char *cfg, cons
 static int cmd_inspect(const HwOpts *o, int preflight)
 {
     IBMSession s;
-    if (get_session(&s) != 0) return 1;
+    if (hw_get_session(&s) != 0) return 1;
     IBMCalibration cal;
     IBMLayout lay;
     if (select_backend(&s, o, &cal, &lay, 1) != 0) return 1;
@@ -348,7 +348,7 @@ int cmd_hardware(int argc, char **argv)
 static int cmd_job_status(const HwOpts *o)
 {
     IBMSession s;
-    if (get_session(&s) != 0) return 1;
+    if (hw_get_session(&s) != 0) return 1;
     char *js = NULL;
     if (ibm_job_get(&s, o->job_id, &js) != 0) qc_die("cannot read job %s", o->job_id);
     cJSON *j = cJSON_Parse(js);
@@ -367,7 +367,7 @@ static int cmd_job_status(const HwOpts *o)
 static int cmd_job_results(const HwOpts *o)
 {
     IBMSession s;
-    if (get_session(&s) != 0) return 1;
+    if (hw_get_session(&s) != 0) return 1;
     char *js = NULL;
     if (ibm_job_get(&s, o->job_id, &js) != 0) qc_die("cannot read job %s", o->job_id);
     cJSON *j = cJSON_Parse(js);
@@ -466,7 +466,7 @@ int cmd_job(int argc, char **argv)
 
 /* ---------- vqe --mode hardware ---------- */
 
-static int confirm_submit(const char *backend, int nobs, int ncz)
+int hw_confirm_submit(const char *backend, int nobs, int ncz)
 {
     printf("\nAbout to submit an Estimator V2 job to REAL hardware: backend %s,\n", backend);
     printf("%d observables, %d native CZ gates. This consumes IBM Quantum time.\n", nobs, ncz);
@@ -512,7 +512,7 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     build_logical_circuit(&o, &u, theta, &cs.fh.ham, &logical, &e_circ, &circ_fid);
 
     IBMSession s;
-    if (get_session(&s) != 0) return 1;
+    if (hw_get_session(&s) != 0) return 1;
     IBMCalibration cal;
     IBMLayout lay;
     if (select_backend(&s, &o, &cal, &lay, 1) != 0) return 1;
@@ -545,7 +545,7 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     printf("  estimator options : default_precision %.3f, resilience_level 1\n", o.precision);
     printf("  local VQE         : %.8f Eh  (FCI %.8f Eh)\n", local_E, fci_E);
     double q_fid, q_dur, q_t2;
-    quality_estimate(&cal, &native, &lay, &q_fid, &q_dur, &q_t2);
+    hw_quality_estimate(&cal, &native, &lay, &q_fid, &q_dur, &q_t2);
     printf("  est. success prob.: %.1e (product of 1-error over CZ and readout; heuristic)\n", q_fid);
     printf("  est. runtime      : %.0f us per shot vs worst T2 in layout %.0f us\n", q_dur, q_t2);
     if (q_fid < 1e-3 || (!isnan(q_t2) && q_dur > q_t2))
@@ -556,7 +556,7 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
         printf("\nDry run: nothing was submitted. Re-run with --submit to send the job after confirmation.\n");
         goto cleanup_ok;
     }
-    if (!o.yes && !confirm_submit(cal.backend_name, nobs, circ_count_kind(&native, G_CZ))) {
+    if (!o.yes && !hw_confirm_submit(cal.backend_name, nobs, circ_count_kind(&native, G_CZ))) {
         printf("aborted: no job submitted\n");
         goto cleanup_ok;
     }
@@ -641,4 +641,30 @@ cleanup_fail:
     uccsd_free(&u);
     cas_system_free(&cs);
     return 1;
+}
+
+int hw_select_backend(IBMSession *s, const char *backend, IBMCalibration *cal, IBMLayout *lay, int verbose)
+{
+    HwOpts o;
+    hw_opts_parse(0, NULL, &o);
+    if (backend && *backend && strcmp(backend, "auto") != 0) snprintf(o.backend, sizeof o.backend, "%s", backend);
+    return select_backend(s, &o, cal, lay, verbose);
+}
+
+/* Qiskit-ordered labels (qubit 0 rightmost) of every Hamiltonian term on the physical
+   register, with logical qubit l at physical lay->final_pos[l]. Caller frees. */
+char **hw_pauli_labels(const PauliSum *ham, const IBMLayout *lay, int nphys)
+{
+    char **labels = qc_calloc(ham->n ? ham->n : 1, sizeof(char *));
+    for (size_t t = 0; t < ham->n; t++) {
+        char *lab = qc_calloc((size_t)nphys + 1, 1);
+        for (int p = 0; p < nphys; p++) lab[p] = 'I';
+        for (int l = 0; l < lay->nl; l++) {
+            int xb = (ham->t[t].x >> l) & 1, zb = (ham->t[t].z >> l) & 1;
+            char c = (xb && zb) ? 'Y' : (xb ? 'X' : (zb ? 'Z' : 0));
+            if (c) lab[nphys - 1 - lay->final_pos[l]] = c;
+        }
+        labels[t] = lab;
+    }
+    return labels;
 }
