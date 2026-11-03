@@ -37,6 +37,15 @@ int main(void)
     cred_mask("abc", m, sizeof m);
     CHECK(strcmp(m, "****") == 0, "short secrets fully masked");
 
+    char region[64];
+    CHECK(ibm_crn_region("crn:v1:bluemix:public:quantum-computing:us-east:a/abc:def::", region, sizeof region) == 0 &&
+          strcmp(region, "us-east") == 0, "CRN region parsed (us-east)");
+    CHECK(strcmp(ibm_url_for_crn("crn:v1:bluemix:public:quantum-computing:us-east:a/abc:def::"),
+                 "https://quantum.cloud.ibm.com/api/v1") == 0, "us-east instance uses the default endpoint");
+    CHECK(strcmp(ibm_url_for_crn("crn:v1:bluemix:public:quantum-computing:eu-de:a/abc:def::"),
+                 "https://eu-de.quantum.cloud.ibm.com/api/v1") == 0, "eu-de instance uses the eu-de endpoint");
+    CHECK(ibm_crn_region("not-a-crn", region, sizeof region) != 0, "malformed CRN rejected");
+
     IBMSession none;
     memset(&none, 0, sizeof none);
     CHECK(cred_load("/nonexistent/qchem/ibm_credentials", &none) != 0, "missing file reported");
