@@ -4,7 +4,7 @@
  *
  * Pauli rotation exp(i phi P), P = sigma_{q1} x ... (Hermitian):
  *   basis change: X -> H ; Y -> SDG then H  (maps the Pauli to Z)
- *   CNOT ladder onto the last support qubit t, RZ(-2 phi) on t, undo.
+ *   nearest-neighbour CNOT chain along the support, RZ(-2 phi) on the last qubit, undo.
  */
 #define _POSIX_C_SOURCE 200809L
 #include "qchem.h"
@@ -49,6 +49,7 @@ void circ_append_pauli_rotation(Circuit *c, uint32_t x, uint32_t z, double phi, 
     for (int q = 0; q < 32; q++)
         if ((supp >> q) & 1) qs[nsup++] = q;
     int t = qs[nsup - 1];
+    (void)t;
     /* basis change into Z */
     for (int k = 0; k < nsup; k++) {
         int q = qs[k];
@@ -56,9 +57,11 @@ void circ_append_pauli_rotation(Circuit *c, uint32_t x, uint32_t z, double phi, 
         if (xb && !zb) circ_add(c, G_H, q, -1, 0);
         else if (xb && zb) { circ_add(c, G_SDG, q, -1, 0); circ_add(c, G_H, q, -1, 0); }
     }
-    for (int k = 0; k < nsup - 1; k++) circ_add(c, G_CX, qs[k], t, 0);
-    circ_add(c, G_RZ, t, -1, -2.0 * phi);          /* exp(i phi Z) = RZ(-2 phi) */
-    for (int k = nsup - 2; k >= 0; k--) circ_add(c, G_CX, qs[k], t, 0);
+    /* nearest-neighbour parity chain: CX(q0,q1) CX(q1,q2) ... leaves the parity on the last
+       qubit and only couples consecutive support qubits (JW strings are contiguous) */
+    for (int k = 0; k < nsup - 1; k++) circ_add(c, G_CX, qs[k], qs[k + 1], 0);
+    circ_add(c, G_RZ, qs[nsup - 1], -1, -2.0 * phi);   /* exp(i phi Z) = RZ(-2 phi) */
+    for (int k = nsup - 2; k >= 0; k--) circ_add(c, G_CX, qs[k], qs[k + 1], 0);
     for (int k = nsup - 1; k >= 0; k--) {
         int q = qs[k];
         int xb = (x >> q) & 1, zb = (z >> q) & 1;

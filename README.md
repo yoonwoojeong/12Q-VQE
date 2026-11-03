@@ -119,12 +119,21 @@ RHF row. Both are reported separately in every output file.
   rotations `exp(iθ d P)`. This is exact at θ = 0 and exact for commuting strings; for
   this system it reaches FCI, but the Trotter error is not separately bounded.
 - **Optimiser**: NLopt `NLOPT_LN_COBYLA` from θ = 0.
-- **Circuits**: logical IR → OpenQASM 3 (`h, sdg, s, x, rz, cx`). Native compilation to
-  `rz, sx, x, cz` (CX = H·CZ·H, H = RZ(π/2)·SX·RZ(π/2)). Routing inserts SWAPs
-  (3 CX) along shortest paths inside the chosen layout.
-- **Backend selection**: online QPUs with ≥ 12 qubits and `cz` in their basis; the
-  candidate with the lowest layout error score (readout errors + CZ errors on the
-  selected 12-qubit connected subgraph) is used unless `--backend` is given.
+- **Circuits**: logical IR → OpenQASM 3 (`h, sdg, s, x, rz, cx`). Each Pauli rotation uses
+  a nearest-neighbour CX chain over its support. Native compilation to `rz, sx, x, cz`
+  (CX = H·CZ·H, H = RZ(π/2)·SX·RZ(π/2)). Routing inserts SWAPs (3 CX) along shortest
+  paths only where two-qubit gates are not on a coupler.
+- **Hardware circuit** (default `--ansatz givens`): the optimised UCCSD state is rewritten
+  in natural orbitals (SVD of its one-α/one-β coefficient matrix) and prepared with a
+  chain of pair rotations plus adjacent Givens orbital rotations. Every gate acts on
+  3–4 consecutive qubits. Pairs whose weight falls below `--givens-trunc` (default
+  10⁻⁴) are dropped; the circuit is checked on the simulator and refused below 0.999
+  fidelity. For CAS(2,6): 432 CX instead of 2,400, fidelity 0.9999977, noiseless energy
+  4×10⁻⁶ Eh above the VQE optimum. `--ansatz uccsd` submits the UCCSD circuit instead.
+- **Backend selection**: online QPUs with ≥ 12 qubits and `cz` in their basis. The layout
+  is a simple path of 12 physical qubits found by search, scored by readout error, CZ
+  error and a 10 µs/T1 + 10 µs/T2 idling penalty (a connected cluster is the fallback).
+  The candidate with the lowest score is used unless `--backend` is given.
 - **Hardware job**: Estimator V2, `program_id = "estimator"`, `version = 2`,
   `resilience_level = 1`, `default_precision` (default 0.02), observables as Pauli
   strings over the physical register (Qiskit label order, qubit 0 rightmost). The
@@ -153,11 +162,13 @@ hard-coded as reference values only.
   was submitted, and no hardware energy, uncertainty, or job ID exists. The REST calls
   follow the 2026-04-15 OpenAPI schema and the documented Estimator example, but they
   have not been exercised against the live service.
-- **Routing is poor for this ansatz.** Jordan–Wigner strings of the UCCSD generators
-  span many qubits. On a 12-qubit ring the routed circuit needs 4156 SWAPs; on a 4×4
-  grid it needs 6752 SWAPs and about 22,600 native CZ gates. On current devices this
-  depth will very likely destroy the signal. `hardware preflight` reports this before
-  any submission.
+- **Hardware circuit cost.** On snapshots of real Heron backends (ibm_fez, ibm_marrakesh,
+  ibm_kingston, ibm_torino, from qiskit-ibm-runtime), the default Givens circuit needs
+  432 CZ, no SWAPs, and about 40 µs per shot, against worst-case T2 of 78–132 µs on the
+  chosen paths. The heuristic success probability (product of 1 − error) is 0.1–0.35, so
+  noise still biases the energy, and `resilience_level = 1` only mitigates readout. The
+  UCCSD circuit (`--ansatz uccsd`) needs about 2,400 CZ even with these layouts.
+  `hardware preflight` and the hardware plan print these estimates before any submission.
 - **Only CZ-basis backends** are supported. ECR-only devices are rejected.
 - **Statevector limit**: 12 qubits, so only CAS(2,k) with k ≤ 6 can be validated
   locally.

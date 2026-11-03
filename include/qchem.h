@@ -230,6 +230,20 @@ typedef struct {
 } UCCSD;
 
 int uccsd_build(UCCSD *u, int nspin, int nelec);
+int fermion_generator(int nc, const int *cre, int na, const int *ann, GenTerm **out, int *nout);
+
+/* ---------- Givens state preparation (src/vqe/givens.c) ---------- */
+typedef struct {
+    int r;                 /* natural-orbital pairs kept */
+    double sv[QC_MAX_QUBIT_SV / 2];   /* singular values (natural-orbital amplitudes) */
+    double kept_weight;    /* sum of kept sv^2 / total */
+    int n_pair_rot;
+    int n_givens;
+    double fidelity;       /* |<target|circuit>|^2 on the simulator */
+    double leakage;        /* target weight outside the one-alpha/one-beta sector */
+} GivensInfo;
+
+int givens_state_circuit(const StateVec *target, int nspin, double trunc, Circuit *c, GivensInfo *info);
 void uccsd_free(UCCSD *u);
 void uccsd_prepare(const UCCSD *u, const double *theta, StateVec *sv);   /* from HF */
 void uccsd_circuit(const UCCSD *u, const double *theta, Circuit *c);       /* logical IR */
@@ -301,6 +315,7 @@ typedef struct {
     double edge_len_ns[IBM_MAX_EDGE];
     double readout_err[IBM_MAX_QUBIT];
     double sx_err[IBM_MAX_QUBIT];
+    double sx_len_ns[IBM_MAX_QUBIT];
     double x_err[IBM_MAX_QUBIT];
     double t1_us[IBM_MAX_QUBIT];
     double t2_us[IBM_MAX_QUBIT];
@@ -342,6 +357,7 @@ int base64_decode_f64(const char *b64, double **out, size_t *n);
 
 int layout_select(const IBMCalibration *cal, int nlogical, IBMLayout *out);
 int layout_compile(const Circuit *logical, const IBMCalibration *cal, IBMLayout *lay, Circuit *native_phys);
+double circ_duration_ns(const Circuit *native, const IBMCalibration *cal);   /* timed critical path */
 
 /* ---------- CAS system loader (src/main.c) ---------- */
 typedef struct {

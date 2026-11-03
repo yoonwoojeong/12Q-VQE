@@ -19,10 +19,17 @@
 #define DEFAULT_READOUT 0.02
 #define DEFAULT_CZ 0.01
 
+/* Per-qubit cost: readout error plus an idling penalty of IDLE_US / T2 (and T1),
+   so short-coherence qubits are avoided for circuits lasting tens of microseconds. */
+#define IDLE_US 10.0
 static double qerr(const IBMCalibration *cal, int q)
 {
     double r = cal->readout_err[q];
-    return isnan(r) ? DEFAULT_READOUT : r;
+    double c = isnan(r) ? DEFAULT_READOUT : r;
+    double t1 = cal->t1_us[q], t2 = cal->t2_us[q];
+    if (!isnan(t2) && t2 > 0) c += IDLE_US / t2;
+    if (!isnan(t1) && t1 > 0) c += IDLE_US / t1;
+    return c;
 }
 
 static double eerr(const IBMCalibration *cal, int e)
@@ -38,7 +45,83 @@ static int edge_index(const IBMCalibration *cal, int a, int b)
     return -1;
 }
 
+static int layout_select_cluster(const IBMCalibration *cal, int nlogical, IBMLayout *out);
+
+/* ---- path layout: logical qubit l -> path[l] on a simple path of the coupling graph ----
+ * Jordan-Wigner strings and the nearest-neighbour CX chains act on consecutive logical
+ * qubits, so on a path every two-qubit gate lands on a coupler and no SWAP is needed.
+ * Exhaustive DFS over simple paths, bounded by a step budget; cost = readout errors of
+ * the path qubits + CZ errors of its couplers. */
+typedef struct {
+    const IBMCalibration *cal;
+    int nl;
+    int path[QC_MAX_QUBIT_SV];
+    int best[QC_MAX_QUBIT_SV];
+    int used[IBM_MAX_QUBIT];
+    double best_cost;
+    long steps;
+    long budget;
+} PathSearch;
+
+static void path_dfs(PathSearch *ps, int depth, double cost)
+{
+    if (++ps->steps > ps->budget) return;
+    if (cost >= ps->best_cost) return;
+    if (depth == ps->nl) {
+        ps->best_cost = cost;
+        memcpy(ps->best, ps->path, sizeof(int) * (size_t)ps->nl);
+        return;
+    }
+    int u = ps->path[depth - 1];
+    const IBMCalibration *cal = ps->cal;
+    for (int e = 0; e < cal->nedge; e++) {
+        int v = -1;
+        if (cal->edge_a[e] == u) v = cal->edge_b[e];
+        else if (cal->edge_b[e] == u) v = cal->edge_a[e];
+        if (v < 0 || ps->used[v]) continue;
+        ps->used[v] = 1;
+        ps->path[depth] = v;
+        path_dfs(ps, depth + 1, cost + qerr(cal, v) + eerr(cal, e));
+        ps->used[v] = 0;
+    }
+}
+
+static int layout_select_path(const IBMCalibration *cal, int nlogical, IBMLayout *out)
+{
+    PathSearch *ps = qc_calloc(1, sizeof *ps);
+    ps->cal = cal;
+    ps->nl = nlogical;
+    ps->best_cost = 1e300;
+    ps->budget = 20000000L;
+    for (int s0 = 0; s0 < cal->nqubit && ps->steps <= ps->budget; s0++) {
+        ps->used[s0] = 1;
+        ps->path[0] = s0;
+        path_dfs(ps, 1, qerr(cal, s0));
+        ps->used[s0] = 0;
+    }
+    int found = ps->best_cost < 1e299;
+    if (found) {
+        memset(out, 0, sizeof *out);
+        out->nl = nlogical;
+        for (int l = 0; l < nlogical; l++) {
+            out->phys[l] = ps->best[l];
+            out->subset[l] = ps->best[l];
+        }
+        out->nsubset = nlogical;
+        out->score = ps->best_cost;
+        out->ok = 1;
+    }
+    free(ps);
+    return found ? 0 : -1;
+}
+
 int layout_select(const IBMCalibration *cal, int nlogical, IBMLayout *out)
+{
+    if (cal->has_cz && layout_select_path(cal, nlogical, out) == 0) return 0;
+    return layout_select_cluster(cal, nlogical, out);
+}
+
+static int layout_select_cluster(const IBMCalibration *cal, int nlogical, IBMLayout *out)
 {
     memset(out, 0, sizeof *out);
     out->nl = nlogical;
@@ -201,4 +284,29 @@ int layout_compile(const Circuit *logical, const IBMCalibration *cal, IBMLayout 
     if (bad) qc_die("layout_compile: %d CZ gates are not on couplers (internal error)", bad);
     lay->ok = 1;
     return 0;
+}
+
+/* Duration of a native circuit as its timed critical path: rz is virtual (0 ns), sx/x take
+   the qubit's calibrated sx length, cz the coupler's length (defaults 32 ns and 68 ns). */
+double circ_duration_ns(const Circuit *native, const IBMCalibration *cal)
+{
+    double *t = qc_calloc((size_t)(native->nq > 0 ? native->nq : 1), sizeof(double));
+    double tmax = 0.0;
+    for (int k = 0; k < native->ng; k++) {
+        const Gate *g = &native->g[k];
+        if (g->kind == G_RZ) continue;
+        if (g->kind == G_SX || g->kind == G_X) {
+            double len = (g->q0 < IBM_MAX_QUBIT && !isnan(cal->sx_len_ns[g->q0])) ? cal->sx_len_ns[g->q0] : 32.0;
+            t[g->q0] += len;
+            if (t[g->q0] > tmax) tmax = t[g->q0];
+        } else if (g->kind == G_CZ) {
+            int e = edge_index(cal, g->q0, g->q1);
+            double len = (e >= 0 && !isnan(cal->edge_len_ns[e])) ? cal->edge_len_ns[e] : 68.0;
+            double st = t[g->q0] > t[g->q1] ? t[g->q0] : t[g->q1];
+            t[g->q0] = t[g->q1] = st + len;
+            if (st + len > tmax) tmax = st + len;
+        }
+    }
+    free(t);
+    return tmax;
 }

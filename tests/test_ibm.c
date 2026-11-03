@@ -144,6 +144,32 @@ int main(void)
     }
     CHECK(fabs(ovmag - 1.0) < 1e-9, "routed state equals logical UCCSD state up to permutation (|<.|.>| = %.12f)", ovmag);
     CHECK(maxdev < 1e-9, "amplitude-by-amplitude agreement after permutation (max dev %.2e)", maxdev);
+    /* Givens circuit on the ring: contiguous support, so no SWAPs, and equivalent after routing */
+    {
+        StateVec tgt;
+        sv_init(&tgt, 12);
+        uccsd_prepare(&u, th, &tgt);
+        Circuit gl, gn;
+        GivensInfo gi;
+        givens_state_circuit(&tgt, 12, 0.0, &gl, &gi);
+        IBMLayout glay;
+        layout_select(&cal, 12, &glay);
+        layout_compile(&gl, &cal, &glay, &gn);
+        CHECK(glay.nswaps == 0, "Givens circuit routes on a path layout with no SWAPs (%d)", glay.nswaps);
+        StateVec P2;
+        sv_init(&P2, 12);
+        circ_simulate(&gn, &P2);
+        double complex ov2 = 0.0;
+        for (size_t i = 0; i < tgt.dim; i++) {
+            size_t jj = 0;
+            for (int l = 0; l < 12; l++) if ((i >> l) & 1) jj |= (size_t)1 << glay.final_pos[l];
+            ov2 += conj(tgt.a[i]) * P2.a[jj];
+        }
+        CHECK(fabs(cabs(ov2) - 1.0) < 1e-9, "routed Givens circuit prepares the UCCSD state (|<.|.>| = %.12f)", cabs(ov2));
+        double dur = circ_duration_ns(&gn, &cal);
+        CHECK(dur > 0, "timed critical path computed (%.1f us)", dur / 1000.0);
+        circ_free(&gl); circ_free(&gn); sv_free(&tgt); sv_free(&P2);
+    }
     free(cfg); free(props);
 
     /* --- 4x4 grid with a noisy corner: layout must avoid the noisy qubit --- */

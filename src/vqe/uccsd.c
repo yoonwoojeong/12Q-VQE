@@ -38,6 +38,39 @@ static PauliSum op_product(int n, const int *orb, const int *dag)
     return acc;
 }
 
+/* Pauli terms of G = T - T+ for T = a+_{cre[0]} ... a+_{cre[nc-1]} a_{ann[0]} ... a_{ann[na-1]}.
+   G is anti-Hermitian, so G = sum_s i d_s P_s; returns the (x, z, d) list. */
+int fermion_generator(int nc, const int *cre, int na, const int *ann, GenTerm **out, int *nout)
+{
+    int orb[8], dag[8], orbd[8], dagd[8];
+    int n = nc + na;
+    if (n > 8) return -1;
+    for (int k = 0; k < nc; k++) { orb[k] = cre[k]; dag[k] = 1; }
+    for (int k = 0; k < na; k++) { orb[nc + k] = ann[k]; dag[nc + k] = 0; }
+    /* T+ : reverse order, flip daggers */
+    for (int k = 0; k < n; k++) { orbd[k] = orb[n - 1 - k]; dagd[k] = !dag[n - 1 - k]; }
+    PauliSum T = op_product(n, orb, dag);
+    PauliSum Td = op_product(n, orbd, dagd);
+    PauliSum G;
+    pauli_sum_init(&G, 0);
+    pauli_sum_append(&G, &T, 1.0);
+    pauli_sum_append(&G, &Td, -1.0);
+    pauli_sum_merge(&G, 1e-14);
+    pauli_sum_free(&T);
+    pauli_sum_free(&Td);
+    *out = qc_calloc(G.n ? G.n : 1, sizeof(GenTerm));
+    *nout = 0;
+    for (size_t t = 0; t < G.n; t++) {
+        if (fabs(creal(G.t[t].c)) > 1e-10) { pauli_sum_free(&G); free(*out); *out = NULL; return -1; }
+        (*out)[*nout].x = G.t[t].x;
+        (*out)[*nout].z = G.t[t].z;
+        (*out)[*nout].d = cimag(G.t[t].c);
+        (*nout)++;
+    }
+    pauli_sum_free(&G);
+    return 0;
+}
+
 static int spin_of(int s) { return s & 1; }
 
 int uccsd_build(UCCSD *u, int nspin, int nelec)

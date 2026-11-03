@@ -117,6 +117,31 @@ int main(void)
     CHECK(fabs(ov - 1.0) < 1e-9, "UCCSD native circuit == IR (|<.|.>| = %.12f); gates %d -> %d, 2q %d -> %d",
           ov, uc.ng, un.ng, circ_count_2q(&uc), circ_count_2q(&un));
 
+    /* 4. Givens state preparation reproduces a two-electron state exactly */
+    StateVec tg;
+    sv_init(&tg, s.fh.nspin);
+    memset(tg.a, 0, sizeof(double complex) * tg.dim);
+    for (int i = 0; i < f.ndet; i++) tg.a[f.dets[i]] = f.ground_vec[i];
+    Circuit gc;
+    GivensInfo gi;
+    givens_state_circuit(&tg, s.fh.nspin, 0.0, &gc, &gi);
+    StateVec gv;
+    sv_init(&gv, s.fh.nspin);
+    circ_simulate(&gc, &gv);
+    double eg = sv_expect_sum(&gv, &s.fh.ham);
+    CHECK(gi.fidelity > 1.0 - 1e-10, "Givens circuit prepares the FCI state (fidelity %.12f)", gi.fidelity);
+    CHECK(fabs(eg - f.ground) < 1e-9, "Givens circuit energy equals FCI (%.12f)", eg);
+    CHECK(circ_count_kind(&gc, G_CX) < circ_count_2q(&uc) / 3,
+          "Givens circuit is shallow: %d CX vs %d for UCCSD", circ_count_kind(&gc, G_CX), circ_count_2q(&uc));
+    Circuit gt;
+    GivensInfo gi2;
+    givens_state_circuit(&tg, s.fh.nspin, 1e-4, &gt, &gi2);
+    CHECK(gi2.fidelity > 0.9999 && gi2.r < 6, "truncated Givens circuit (r=%d) keeps fidelity %.8f", gi2.r, gi2.fidelity);
+    circ_free(&gc);
+    circ_free(&gt);
+    sv_free(&tg);
+    sv_free(&gv);
+
     fci_free(&f);
     uccsd_free(&u);
     circ_free(&uc); circ_free(&un); circ_free(&ic); circ_free(&nat);
