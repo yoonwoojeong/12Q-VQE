@@ -325,6 +325,9 @@ int cred_default_path(char *buf, size_t n);
 int cred_load(const char *path, IBMSession *s);
 int cred_store(const char *path, const char *api_key, const char *crn, const char *url, const char *version);
 void cred_mask(const char *secret, char *out, size_t n);
+int ibm_crn_region(const char *crn, char *out, size_t n);
+const char *ibm_url_for_crn(const char *crn);
+void ibm_report_http_error(const IBMSession *s, const char *method, const char *path, long code, const char *resp);
 int cmd_auth(int argc, char **argv);
 int ibm_session_authenticate(IBMSession *s);       /* IAM API-key exchange */
 int ibm_http(IBMSession *s, const char *method, const char *path, const char *body, char **resp, long *status);

@@ -230,6 +230,16 @@ static int cmd_status(void)
     }
     memset(k, 0, sizeof k);
     int usable = (file.api_key[0] && file.crn[0]) || (env_key && env_crn);
+    if (usable) {
+        IBMSession eff;
+        if (ibm_session_env(&eff) == 0) {
+            char region[64] = "?";
+            ibm_crn_region(eff.crn, region, sizeof region);
+            printf("instance region  : %s\n", region);
+            printf("API endpoint     : %s\n", eff.base_url);
+            memset(eff.api_key, 0, sizeof eff.api_key);
+        }
+    }
     printf("status           : %s\n", usable ? "credentials available" : "no credentials (run `qchem-vqe auth login`)");
     return 0;
 }

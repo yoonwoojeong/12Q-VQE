@@ -116,6 +116,34 @@ static void print_layout(const IBMCalibration *cal, const IBMLayout *lay)
     (void)cal;
 }
 
+/* Heuristic quality of a compiled circuit: product of (1 - error) over CZ gates and
+   readout of the layout qubits, and runtime as depth x mean CZ length. Not a measurement. */
+static void quality_estimate(const IBMCalibration *cal, const Circuit *native, const IBMLayout *lay,
+                             double *fid, double *dur_us, double *min_t2_us)
+{
+    double f = 1.0, len_s = 0.0, len_n = 0.0;
+    for (int e = 0; e < cal->nedge; e++)
+        if (!isnan(cal->edge_len_ns[e])) { len_s += cal->edge_len_ns[e]; len_n++; }
+    for (int k = 0; k < native->ng; k++) {
+        const Gate *g = &native->g[k];
+        if (g->kind != G_CZ) continue;
+        for (int e = 0; e < cal->nedge; e++)
+            if ((cal->edge_a[e] == g->q0 && cal->edge_b[e] == g->q1) || (cal->edge_a[e] == g->q1 && cal->edge_b[e] == g->q0)) {
+                f *= 1.0 - (isnan(cal->edge_err[e]) ? 0.01 : cal->edge_err[e]);
+                break;
+            }
+    }
+    double t2 = 1e300;
+    for (int i = 0; i < lay->nsubset; i++) {
+        int q = lay->subset[i];
+        f *= 1.0 - (isnan(cal->readout_err[q]) ? 0.02 : cal->readout_err[q]);
+        if (!isnan(cal->t2_us[q]) && cal->t2_us[q] < t2) t2 = cal->t2_us[q];
+    }
+    *fid = f;
+    *dur_us = circ_depth(native) * (len_n ? len_s / len_n : 60.0) / 1000.0;
+    *min_t2_us = t2 < 1e300 ? t2 : NAN;
+}
+
 /* ---------- hardware list / inspect / preflight ---------- */
 
 static int cmd_list(const HwOpts *o)
@@ -467,6 +495,13 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     printf("  observables       : %d Pauli strings over %d physical qubits\n", nobs, cal.nqubit);
     printf("  estimator options : default_precision %.3f, resilience_level 1\n", o.precision);
     printf("  local VQE         : %.8f Eh  (FCI %.8f Eh)\n", local_E, fci_E);
+    double q_fid, q_dur, q_t2;
+    quality_estimate(&cal, &native, &lay, &q_fid, &q_dur, &q_t2);
+    printf("  est. success prob.: %.1e (product of 1-error over CZ and readout; heuristic)\n", q_fid);
+    printf("  est. runtime      : %.0f us per shot vs worst T2 in layout %.0f us\n", q_dur, q_t2);
+    if (q_fid < 1e-3 || (!isnan(q_t2) && q_dur > q_t2))
+        printf("  WARNING: at this depth the QPU result is expected to be dominated by noise;\n"
+               "           the measured energy will not reflect the VQE state.\n");
 
     if (!submit) {
         printf("\nDry run: nothing was submitted. Re-run with --submit to send the job after confirmation.\n");

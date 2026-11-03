@@ -6,6 +6,8 @@
 
 #include <cjson/cJSON.h>
 #include <math.h>
+#include <signal.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -430,8 +432,21 @@ int cmd_vqe(int argc, char **argv)
     return 0;
 }
 
+/* Under `wsl --exec` no shell reports a crash, so say it ourselves (async-signal-safe). */
+static void crash_handler(int sig)
+{
+    static const char msg[] = "\nerror: qchem-vqe crashed (internal error). Please report the command and its output.\n";
+    ssize_t w = write(STDERR_FILENO, msg, sizeof msg - 1);
+    (void)w;
+    _exit(128 + sig);
+}
+
 int main(int argc, char **argv)
 {
+    signal(SIGSEGV, crash_handler);
+    signal(SIGBUS, crash_handler);
+    signal(SIGFPE, crash_handler);
+    signal(SIGABRT, crash_handler);
     if (argc < 2) {
         fprintf(stderr,
                 "usage: qchem-vqe <command> [options]\n"

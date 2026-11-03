@@ -21,6 +21,10 @@
 
 #define IBM_IAM_URL "https://iam.cloud.ibm.com/identity/token"
 #define IBM_DEFAULT_URL "https://quantum.cloud.ibm.com/api/v1"
+#define IBM_EU_DE_URL "https://eu-de.quantum.cloud.ibm.com/api/v1"
+/* IBM's front end answers requests without a User-Agent with HTTP 403 and an HTML page,
+   and libcurl sends none by default. */
+#define IBM_USER_AGENT "qchem-vqe/" QC_VERSION " (libcurl)"
 #define IBM_DEFAULT_VERSION "2026-04-15"
 
 typedef struct {
@@ -39,6 +43,53 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
     return n;
 }
 
+/* Region of an IBM Cloud CRN: crn:v1:bluemix:public:quantum-computing:<region>:a/<account>:<instance>:: */
+int ibm_crn_region(const char *crn, char *out, size_t n)
+{
+    out[0] = 0;
+    const char *p = crn;
+    for (int field = 0; field < 5; field++) {
+        p = strchr(p, ':');
+        if (!p) return -1;
+        p++;
+    }
+    const char *e = strchr(p, ':');
+    size_t len = e ? (size_t)(e - p) : strlen(p);
+    if (len == 0 || len >= n) return -1;
+    memcpy(out, p, len);
+    out[len] = 0;
+    return 0;
+}
+
+/* API base URL for the instance's region (only eu-de differs from the default). */
+const char *ibm_url_for_crn(const char *crn)
+{
+    char region[64];
+    if (ibm_crn_region(crn, region, sizeof region) == 0 && strcmp(region, "eu-de") == 0) return IBM_EU_DE_URL;
+    return IBM_DEFAULT_URL;
+}
+
+/* Explains a failed REST call, including IBM's own error message (it holds no secrets). */
+void ibm_report_http_error(const IBMSession *s, const char *method, const char *path, long code, const char *resp)
+{
+    fprintf(stderr, "error: %s %s returned HTTP %ld\n", method, path, code);
+    if (resp && *resp) {
+        char msg[601];
+        size_t k = 0;
+        for (const char *c = resp; *c && k < sizeof msg - 1; c++) msg[k++] = (*c == '\n' || *c == '\r') ? ' ' : *c;
+        msg[k] = 0;
+        fprintf(stderr, "  server said: %s%s\n", msg, strlen(resp) > k ? " ..." : "");
+    }
+    if (code == 401 || code == 403) {
+        char region[64] = "?";
+        ibm_crn_region(s->crn, region, sizeof region);
+        fprintf(stderr, "  endpoint: %s (instance CRN region: %s)\n", s->base_url, region);
+        fprintf(stderr, "  hints: the CRN must be a Quantum instance this API key can access (check the\n"
+                        "         instance's access policies); eu-de instances use %s;\n"
+                        "         re-enter credentials with `qchem-vqe auth login`.\n", IBM_EU_DE_URL);
+    }
+}
+
 int ibm_session_env(IBMSession *s)
 {
     memset(s, 0, sizeof *s);
@@ -49,7 +100,7 @@ int ibm_session_env(IBMSession *s)
     qc_env_get("IBM_QUANTUM_CRN", s->crn, sizeof s->crn);
     qc_env_get("IBM_QUANTUM_API_URL", s->base_url, sizeof s->base_url);
     qc_env_get("IBM_QUANTUM_API_VERSION", s->api_version, sizeof s->api_version);
-    if (!s->base_url[0]) snprintf(s->base_url, sizeof s->base_url, "%s", IBM_DEFAULT_URL);
+    if (!s->base_url[0]) snprintf(s->base_url, sizeof s->base_url, "%s", ibm_url_for_crn(s->crn));
     if (!s->api_version[0]) snprintf(s->api_version, sizeof s->api_version, "%s", IBM_DEFAULT_VERSION);
     int ok = 1;
     if (!s->api_key[0]) {
@@ -77,6 +128,7 @@ int ibm_session_authenticate(IBMSession *s)
     curl_easy_setopt(curl, CURLOPT_URL, IBM_IAM_URL);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, IBM_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
@@ -126,6 +178,7 @@ int ibm_http(IBMSession *s, const char *method, const char *path, const char *bo
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
     if (body) curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, IBM_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
@@ -153,7 +206,7 @@ int ibm_list_backends(IBMSession *s, IBMBackendInfo **out, int *nout)
     *out = NULL;
     *nout = 0;
     if (ibm_http(s, "GET", "/backends", NULL, &resp, &code) != 0 || code != 200) {
-        fprintf(stderr, "error: GET /backends returned HTTP %ld\n", code);
+        ibm_report_http_error(s, "GET", "/backends", code, resp);
         free(resp);
         return -1;
     }
@@ -183,17 +236,30 @@ int ibm_list_backends(IBMSession *s, IBMBackendInfo **out, int *nout)
     return 0;
 }
 
+static int get_checked(IBMSession *s, const char *path, char **out)
+{
+    long code = 0;
+    char *resp = NULL;
+    if (ibm_http(s, "GET", path, NULL, &resp, &code) != 0 || code != 200) {
+        ibm_report_http_error(s, "GET", path, code, resp);
+        free(resp);
+        if (out) *out = NULL;
+        return -1;
+    }
+    *out = resp;
+    return 0;
+}
+
 int ibm_get_backend_raw(IBMSession *s, const char *name, char **cfg_json, char **props_json, char **status_json)
 {
     char path[512];
-    long code = 0;
     snprintf(path, sizeof path, "/backends/%s/configuration", name);
-    if (ibm_http(s, "GET", path, NULL, cfg_json, &code) != 0 || code != 200) return -1;
+    if (get_checked(s, path, cfg_json) != 0) return -1;
     snprintf(path, sizeof path, "/backends/%s/properties", name);
-    if (ibm_http(s, "GET", path, NULL, props_json, &code) != 0 || code != 200) return -1;
-    snprintf(path, sizeof path, "/backends/%s/status", name);
+    if (get_checked(s, path, props_json) != 0) return -1;
     if (status_json) {
-        if (ibm_http(s, "GET", path, NULL, status_json, &code) != 0 || code != 200) return -1;
+        snprintf(path, sizeof path, "/backends/%s/status", name);
+        if (get_checked(s, path, status_json) != 0) return -1;
     }
     return 0;
 }
@@ -204,6 +270,14 @@ static double num_of(cJSON *o, const char *key, double dflt)
 {
     cJSON *v = cJSON_GetObjectItem(o, key);
     return cJSON_IsNumber(v) ? v->valuedouble : dflt;
+}
+
+/* Qubit index from a JSON value: real backends send numbers, the OpenAPI schema says strings. */
+static int json_qubit(const cJSON *v)
+{
+    if (cJSON_IsNumber(v)) return v->valueint;
+    if (cJSON_IsString(v) && v->valuestring) return atoi(v->valuestring);
+    return -1;
 }
 
 static int find_edge(const IBMCalibration *cal, int a, int b)
@@ -283,8 +357,8 @@ int ibm_calibration_parse(const char *cfg_json, const char *props_json, IBMCalib
         cJSON *gp = cJSON_GetObjectItem(g, "parameters");
         if (!cJSON_IsString(gn) || !cJSON_IsArray(gq)) continue;
         int nq = cJSON_GetArraySize(gq);
-        int qa = nq > 0 ? atoi(cJSON_GetArrayItem(gq, 0)->valuestring) : -1;
-        int qb = nq > 1 ? atoi(cJSON_GetArrayItem(gq, 1)->valuestring) : -1;
+        int qa = nq > 0 ? json_qubit(cJSON_GetArrayItem(gq, 0)) : -1;
+        int qb = nq > 1 ? json_qubit(cJSON_GetArrayItem(gq, 1)) : -1;
         double err = NAN, len = NAN;
         for (cJSON *p = gp ? gp->child : NULL; p; p = p->next) {
             cJSON *pn = cJSON_GetObjectItem(p, "name");
@@ -343,8 +417,8 @@ int ibm_job_get(IBMSession *s, const char *job_id, char **json)
     char path[256];
     long code = 0;
     snprintf(path, sizeof path, "/jobs/%s", job_id);
-    if (ibm_http(s, "GET", path, NULL, json, &code) != 0 || code != 200) return -1;
-    return 0;
+    (void)code;
+    return get_checked(s, path, json);
 }
 
 int ibm_job_results(IBMSession *s, const char *job_id, char **json)
@@ -352,8 +426,8 @@ int ibm_job_results(IBMSession *s, const char *job_id, char **json)
     char path[256];
     long code = 0;
     snprintf(path, sizeof path, "/jobs/%s/results", job_id);
-    if (ibm_http(s, "GET", path, NULL, json, &code) != 0 || code != 200) return -1;
-    return 0;
+    (void)code;
+    return get_checked(s, path, json);
 }
 
 /* ---- base64 (little-endian f64 arrays) ---- */
