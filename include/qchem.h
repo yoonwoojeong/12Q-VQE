@@ -344,6 +344,41 @@ int ibm_crn_region(const char *crn, char *out, size_t n);
 const char *ibm_url_for_crn(const char *crn);
 void ibm_report_http_error(const IBMSession *s, const char *method, const char *path, long code, const char *resp);
 int cmd_auth(int argc, char **argv);
+int cmd_experiment(int argc, char **argv);
+
+/* controlled experiment (src/hw/experiment.c) */
+#define EXP_ARM_BARE 1
+#define EXP_ARM_MATCHED 2
+#define EXP_ARM_VQE 4
+typedef struct {
+    char path[512];
+    char name[64];
+    double bond;
+    int nel, norb;
+    char backend[128];   /* "auto" or a backend name */
+    int ansatz_uccsd;
+    double gtrunc;
+    double precision;
+    int resilience;
+    int seed;
+    int arms;            /* EXP_ARM_* bitmask */
+} ExpConfig;
+typedef struct {
+    const char *name;
+    const char *purpose;
+    Circuit logical;
+    double exact;        /* noiseless energy of the logical circuit */
+} ExpArm;
+void exp_config_default(ExpConfig *c);
+int exp_config_load(const char *path, ExpConfig *c, char *err, size_t errlen);
+int exp_build_arms(const ExpConfig *cfg, const UCCSD *u, const double *theta, const PauliSum *ham,
+                   ExpArm *arms, int *narms, double *vqe_fidelity);
+int hw_get_session(IBMSession *s);
+int hw_select_backend(IBMSession *s, const char *backend, IBMCalibration *cal, IBMLayout *lay, int verbose);
+void hw_quality_estimate(const IBMCalibration *cal, const Circuit *native, const IBMLayout *lay,
+                         double *fid, double *dur_us, double *min_t2_us);
+int hw_confirm_submit(const char *backend, int nobs, int ncz);
+char **hw_pauli_labels(const PauliSum *ham, const IBMLayout *lay, int nphys);
 int ibm_session_authenticate(IBMSession *s);       /* IAM API-key exchange */
 int ibm_http(IBMSession *s, const char *method, const char *path, const char *body, char **resp, long *status);
 int ibm_list_backends(IBMSession *s, IBMBackendInfo **out, int *nout);
@@ -351,6 +386,9 @@ int ibm_get_backend_raw(IBMSession *s, const char *name, char **cfg_json, char *
 int ibm_calibration_parse(const char *cfg_json, const char *props_json, IBMCalibration *cal);
 int ibm_job_submit(IBMSession *s, const char *backend, const char *qasm, const char *const *labels, int nlabels,
                    double precision, char **resp);
+int ibm_job_submit_pubs(IBMSession *s, const char *backend, const char *const *qasms, int npubs,
+                        const char *const *const *labels, int nlabels, double precision,
+                        int resilience_level, int seed, char **resp);
 int ibm_job_get(IBMSession *s, const char *job_id, char **json);
 int ibm_job_results(IBMSession *s, const char *job_id, char **json);
 int base64_decode_f64(const char *b64, double **out, size_t *n);

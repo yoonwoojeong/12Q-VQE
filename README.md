@@ -40,6 +40,34 @@ Afterwards, run the program inside WSL, for example
 `wsl --cd <repo path in WSL> -- ./build/qchem-vqe rhf`. Credentials stored with `auth login`
 live in the Linux home of the WSL distribution, not in Windows.
 
+## Controlled QPU experiment
+
+One config file, three commands:
+
+```bash
+./build/qchem-vqe experiment plan                 # dry run: builds every arm, picks backend and qubits, prints the plan
+./build/qchem-vqe experiment run                  # submits all arms as ONE Estimator job (type SUBMIT to confirm)
+./build/qchem-vqe experiment results JOB_ID       # per-arm energies and the controlled comparison
+```
+
+The config is `experiments/h2_cas26.ini` (system, backend, ansatz, precision,
+resilience level, seed, arms); copy it to vary one setting at a time. All arms run in the
+same job, so they share the backend, physical qubits, calibration window, shots,
+mitigation and seed:
+
+| Arm | Circuit | Exact energy | Role |
+|---|---|---|---|
+| `bare_hf` | X gates only | E_HF | readout-only control |
+| `matched_hf` | the `vqe` circuit with every rotation angle 0 | E_HF | same gates and noise as `vqe`: noise control |
+| `vqe` | Givens circuit preparing the optimised VQE state | noiseless circuit energy | treatment |
+
+`experiment results` reports QPU − exact for each arm, the correlation energy measured
+on the chip as E(vqe) − E(matched_hf), and a control-corrected VQE energy
+E_HF + [E(vqe) − E(matched_hf)]_QPU. The correction assumes that the treatment and its
+angle-zero control carry the same noise bias. `experiment plan --calibration CONF.json PROPS.json`
+plans offline from saved backend files without credentials. Plans, records and results are
+written to `results/experiments/`.
+
 ## Commands
 
 ```bash
