@@ -42,19 +42,24 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 int ibm_session_env(IBMSession *s)
 {
     memset(s, 0, sizeof *s);
+    /* stored credentials first (file written by `auth login`), then environment overrides */
+    char path[1024];
+    if (cred_default_path(path, sizeof path) == 0) cred_load(path, s);
+    qc_env_get("IBM_QUANTUM_API_KEY", s->api_key, sizeof s->api_key);
+    qc_env_get("IBM_QUANTUM_CRN", s->crn, sizeof s->crn);
+    qc_env_get("IBM_QUANTUM_API_URL", s->base_url, sizeof s->base_url);
+    qc_env_get("IBM_QUANTUM_API_VERSION", s->api_version, sizeof s->api_version);
+    if (!s->base_url[0]) snprintf(s->base_url, sizeof s->base_url, "%s", IBM_DEFAULT_URL);
+    if (!s->api_version[0]) snprintf(s->api_version, sizeof s->api_version, "%s", IBM_DEFAULT_VERSION);
     int ok = 1;
-    if (!qc_env_get("IBM_QUANTUM_API_KEY", s->api_key, sizeof s->api_key)) {
-        fprintf(stderr, "error: environment variable IBM_QUANTUM_API_KEY is not set\n");
+    if (!s->api_key[0]) {
+        fprintf(stderr, "error: no IBM API key (run `qchem-vqe auth login` or set IBM_QUANTUM_API_KEY)\n");
         ok = 0;
     }
-    if (!qc_env_get("IBM_QUANTUM_CRN", s->crn, sizeof s->crn)) {
-        fprintf(stderr, "error: environment variable IBM_QUANTUM_CRN (instance CRN) is not set\n");
+    if (!s->crn[0]) {
+        fprintf(stderr, "error: no IBM instance CRN (run `qchem-vqe auth login` or set IBM_QUANTUM_CRN)\n");
         ok = 0;
     }
-    if (!qc_env_get("IBM_QUANTUM_API_URL", s->base_url, sizeof s->base_url))
-        snprintf(s->base_url, sizeof s->base_url, "%s", IBM_DEFAULT_URL);
-    if (!qc_env_get("IBM_QUANTUM_API_VERSION", s->api_version, sizeof s->api_version))
-        snprintf(s->api_version, sizeof s->api_version, "%s", IBM_DEFAULT_VERSION);
     return ok ? 0 : -1;
 }
 
