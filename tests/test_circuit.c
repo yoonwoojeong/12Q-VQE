@@ -142,6 +142,41 @@ int main(void)
     sv_free(&tg);
     sv_free(&gv);
 
+    /* 5. Analytic adjoint gradient matches central finite differences & ADAPT-VQE reaches FCI */
+    {
+        double *grad = qc_calloc((size_t)u.nexc, sizeof(double));
+        StateVec psi_g, lam_g;
+        sv_init(&psi_g, s.fh.nspin);
+        sv_init(&lam_g, s.fh.nspin);
+        vqe_energy_grad(&u, &s.fh.ham, th, grad, &psi_g, &lam_g);
+        double max_gerr = 0.0;
+        double eps = 1e-6;
+        for (int k = 0; k < u.nexc; k++) {
+            double orig = th[k];
+            th[k] = orig + eps;
+            double ep = vqe_energy(&u, &s.fh.ham, th, &sc);
+            th[k] = orig - eps;
+            double em = vqe_energy(&u, &s.fh.ham, th, &sc);
+            th[k] = orig;
+            double fd = (ep - em) / (2.0 * eps);
+            double err = fabs(grad[k] - fd);
+            if (err > max_gerr) max_gerr = err;
+        }
+        CHECK(max_gerr < 1e-8, "reverse-mode adjoint gradient matches finite difference (max |diff| %.2e)", max_gerr);
+        free(grad);
+        sv_free(&psi_g);
+        sv_free(&lam_g);
+
+        AdaptResult ar;
+        Circuit ac;
+        adapt_vqe_optimize(&u, &s.fh.ham, 15, 1e-6, 0, &ar, &ac);
+        CHECK(fabs(ar.energy - f.ground) < 1e-10 && ar.n_ops <= 10,
+              "ADAPT-VQE + L-BFGS reaches FCI in %d ops (|E-FCI| = %.2e, %d CX)",
+              ar.n_ops, fabs(ar.energy - f.ground), circ_count_2q(&ac));
+        adapt_result_free(&ar);
+        circ_free(&ac);
+    }
+
     fci_free(&f);
     uccsd_free(&u);
     circ_free(&uc); circ_free(&un); circ_free(&ic); circ_free(&nat);

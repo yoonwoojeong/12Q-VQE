@@ -1,6 +1,7 @@
 /*
  * Electronic-structure validation: basis, integrals, RHF, active space,
- * Jordan-Wigner Hamiltonian, FCI cross-checks.
+ * Jordan-Wigner Hamiltonian, FCI cross-checks, multi-element molecules,
+ * and 16-qubit scaling.
  * Reference numbers come from an external PySCF 2.14 run at the same
  * geometry/basis (scratch environment, not part of the build).
  */
@@ -80,6 +81,37 @@ int main(void)
     rhf_free(&s.rhf);
     ao_integrals_free(&s.ints);
     basis_free(&s.bs);
+
+    /* Multi-element & frozen-core validation: LiH in STO-3G (SP shells, Z=3,1, ncore=1) */
+    {
+        Molecule lih;
+        mol_setup_by_name(&lih, "LiH", 1.595);
+        BasisSet bs;
+        basis_build(&bs, &lih, QC_DATA_DIR "/basis/sto-3g.nw", "sto-3g");
+        CHECK(bs.nao == 6, "LiH/STO-3G has 6 AOs from S and SP shells (got %d)", bs.nao);
+        AOInts ints;
+        ao_integrals_compute(&ints, &bs, &lih);
+        RHFResult rhf;
+        rhf_run(&rhf, &ints, &lih, 200, 1e-11, 1e-9, 0);
+        ActiveSpace as;
+        active_space_build(&as, &ints, &rhf, &lih, 2, 5, 1); /* frozen 1s core */
+        CHECK(as.ncore == 1 && fabs(active_hf_energy(&as) - rhf.energy) < 1e-10,
+              "LiH frozen-core CAS(2,5) HF energy equals full RHF (%.12f)", rhf.energy);
+        FermionHam fh;
+        fermion_build_hamiltonian(&fh, &as);
+        FCIResult fci;
+        fci_solve(&fci, &fh, &as, 2);
+        double pg_lih = fci_pauli_restricted_ground(&fh, &fci);
+        CHECK(fabs(pg_lih - fci.ground) < 1e-11 && fci.ground < rhf.energy,
+              "LiH CAS(2,5) JW Pauli Hamiltonian matches FCI (%.12f Eh)", fci.ground);
+        fci_free(&fci);
+        fermion_free(&fh);
+        active_space_free(&as);
+        rhf_free(&rhf);
+        ao_integrals_free(&ints);
+        basis_free(&bs);
+    }
+
     printf("%s\n", g_fail ? "test_chem: FAILED" : "test_chem: passed");
     return g_fail ? 1 : 0;
 }

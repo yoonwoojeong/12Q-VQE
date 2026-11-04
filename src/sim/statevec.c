@@ -1,5 +1,5 @@
 /*
- * Dense statevector simulator (up to 12 qubits, 4096 amplitudes).
+ * Dense statevector simulator (up to 20 qubits, OpenMP-accelerated).
  * Basis index bit k = occupation of qubit k.
  */
 #define _POSIX_C_SOURCE 200809L
@@ -51,6 +51,7 @@ void sv_apply_pauli_rotation(StateVec *sv, uint32_t x, uint32_t z, double phi)
     double complex *a = sv->a;
     if (x == 0) {
         /* diagonal: P psi_i = i^k (-1)^{pc(i&z)} psi_i */
+        #pragma omp parallel for if(dim >= 16384)
         for (size_t i = 0; i < dim; i++) {
             double sg = (__builtin_popcount((unsigned)(i & z)) & 1) ? -1.0 : 1.0;
             double complex p = ik * sg;
@@ -58,6 +59,7 @@ void sv_apply_pauli_rotation(StateVec *sv, uint32_t x, uint32_t z, double phi)
         }
         return;
     }
+    #pragma omp parallel for if(dim >= 16384)
     for (size_t i = 0; i < dim; i++) {
         size_t j = i ^ x;
         if (j < i) continue;          /* handle each pair once */
@@ -72,34 +74,42 @@ void sv_apply_pauli_rotation(StateVec *sv, uint32_t x, uint32_t z, double phi)
 /* out <- (sum_t c_t P_t) in */
 void sv_apply_sum(const StateVec *in, const PauliSum *ps, StateVec *out)
 {
-    for (size_t i = 0; i < in->dim; i++) out->a[i] = 0.0;
-    for (size_t k = 0; k < ps->n; k++) {
-        uint32_t x = ps->t[k].x, z = ps->t[k].z;
-        double complex ph = ps->t[k].c * IPOW4[__builtin_popcount(x & z) & 3];
-        for (size_t i = 0; i < in->dim; i++) {
+    size_t dim = in->dim;
+    #pragma omp parallel for if(dim >= 4096)
+    for (size_t i = 0; i < dim; i++) {
+        double complex acc = 0.0;
+        for (size_t k = 0; k < ps->n; k++) {
+            uint32_t x = ps->t[k].x, z = ps->t[k].z;
+            double complex ph = ps->t[k].c * IPOW4[__builtin_popcount(x & z) & 3];
             size_t j = i ^ x;
             double sg = (__builtin_popcount((unsigned)(j & z)) & 1) ? -1.0 : 1.0;
-            out->a[i] += ph * sg * in->a[j];
+            acc += ph * sg * in->a[j];
         }
+        out->a[i] = acc;
     }
 }
 
 void sv_apply_1q(StateVec *sv, int q, const double complex u[2][2])
 {
     size_t bit = (size_t)1 << q;
-    for (size_t i = 0; i < sv->dim; i++) {
+    size_t dim = sv->dim;
+    double complex u00 = u[0][0], u01 = u[0][1], u10 = u[1][0], u11 = u[1][1];
+    #pragma omp parallel for if(dim >= 16384)
+    for (size_t i = 0; i < dim; i++) {
         if (i & bit) continue;
         size_t j = i | bit;
         double complex a = sv->a[i], b = sv->a[j];
-        sv->a[i] = u[0][0] * a + u[0][1] * b;
-        sv->a[j] = u[1][0] * a + u[1][1] * b;
+        sv->a[i] = u00 * a + u01 * b;
+        sv->a[j] = u10 * a + u11 * b;
     }
 }
 
 void sv_apply_cx(StateVec *sv, int c, int t)
 {
     size_t cb = (size_t)1 << c, tb = (size_t)1 << t;
-    for (size_t i = 0; i < sv->dim; i++) {
+    size_t dim = sv->dim;
+    #pragma omp parallel for if(dim >= 16384)
+    for (size_t i = 0; i < dim; i++) {
         if ((i & cb) && !(i & tb)) {
             double complex tmp = sv->a[i];
             sv->a[i] = sv->a[i | tb];
@@ -111,28 +121,47 @@ void sv_apply_cx(StateVec *sv, int c, int t)
 void sv_apply_cz(StateVec *sv, int c, int t)
 {
     size_t cb = (size_t)1 << c, tb = (size_t)1 << t;
-    for (size_t i = 0; i < sv->dim; i++)
+    size_t dim = sv->dim;
+    #pragma omp parallel for if(dim >= 16384)
+    for (size_t i = 0; i < dim; i++)
         if ((i & cb) && (i & tb)) sv->a[i] = -sv->a[i];
 }
 
 double complex sv_expect_pauli(const StateVec *sv, uint32_t x, uint32_t z)
 {
     int k = __builtin_popcount(x & z) & 3;
-    double complex s = 0.0;
-    for (size_t i = 0; i < sv->dim; i++) {
+    double complex ik = IPOW4[k];
+    double sr = 0.0, si = 0.0;
+    size_t dim = sv->dim;
+    #pragma omp parallel for reduction(+:sr,si) if(dim >= 16384)
+    for (size_t i = 0; i < dim; i++) {
         size_t j = i ^ x;
         double sg = (__builtin_popcount((unsigned)(j & z)) & 1) ? -1.0 : 1.0;
-        s += conj(sv->a[i]) * IPOW4[k] * sg * sv->a[j];
+        double complex val = conj(sv->a[i]) * ik * sg * sv->a[j];
+        sr += creal(val);
+        si += cimag(val);
     }
-    return s;
+    return sr + I * si;
 }
 
 double sv_expect_sum(const StateVec *sv, const PauliSum *ps)
 {
-    double complex e = 0.0;
-    for (size_t t = 0; t < ps->n; t++)
-        e += ps->t[t].c * sv_expect_pauli(sv, ps->t[t].x, ps->t[t].z);
-    return creal(e);
+    double e = 0.0;
+    size_t nt = ps->n;
+    #pragma omp parallel for reduction(+:e) if(nt >= 16)
+    for (size_t t = 0; t < nt; t++) {
+        uint32_t x = ps->t[t].x, z = ps->t[t].z;
+        int k = __builtin_popcount(x & z) & 3;
+        double complex ik = IPOW4[k];
+        double complex s = 0.0;
+        for (size_t i = 0; i < sv->dim; i++) {
+            size_t j = i ^ x;
+            double sg = (__builtin_popcount((unsigned)(j & z)) & 1) ? -1.0 : 1.0;
+            s += conj(sv->a[i]) * ik * sg * sv->a[j];
+        }
+        e += creal(ps->t[t].c * s);
+    }
+    return e;
 }
 
 double sv_norm(const StateVec *sv)

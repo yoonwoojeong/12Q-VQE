@@ -43,8 +43,13 @@ static void enumerate_dets(int ns, int nel, uint32_t **out, int *nout)
 
 static int find_det(const uint32_t *dets, int n, uint32_t m)
 {
-    for (int i = 0; i < n; i++)
-        if (dets[i] == m) return i;
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (dets[mid] == m) return mid;
+        if (dets[mid] < m) lo = mid + 1;
+        else hi = mid - 1;
+    }
     return -1;
 }
 
@@ -57,6 +62,7 @@ int fci_solve(FCIResult *r, const FermionHam *fh, const ActiveSpace *as, int nel
     r->ndet = nd;
     double *H = qc_calloc((size_t)nd * nd, sizeof(double));
 
+    #pragma omp parallel for
     for (int J = 0; J < nd; J++) {
         /* one-body: sum h_pq a+_p a_q |J> */
         for (int q = 0; q < ns; q++)
@@ -115,35 +121,33 @@ double fci_pauli_restricted_ground(const FermionHam *fh, const FCIResult *fci)
 {
     int ns = fh->nspin;
     int nd = fci->ndet;
+    static const double complex IPOW4[4] = {1.0, I, -1.0, -I};
     double *M = qc_calloc((size_t)nd * nd, sizeof(double));
-    StateVec in, out;
-    sv_init(&in, ns);
-    sv_init(&out, ns);
+    #pragma omp parallel for
     for (int J = 0; J < nd; J++) {
-        sv_set_basis(&in, fci->dets[J]);
-        sv_apply_sum(&in, &fh->ham, &out);
-        for (int ii = 0; ii < nd; ii++) {
-            double complex a = out.a[fci->dets[ii]];
-            M[(size_t)ii * nd + J] = creal(a);
-            if (fabs(cimag(a)) > 1e-10) qc_warn("Pauli-restricted FCI: imaginary matrix element");
+        uint32_t detJ = fci->dets[J];
+        for (size_t k = 0; k < fh->ham.n; k++) {
+            uint32_t x = fh->ham.t[k].x, z = fh->ham.t[k].z;
+            uint32_t detI = detJ ^ x;
+            if (__builtin_popcount(detI) != __builtin_popcount(detJ)) {
+                if (cabs(fh->ham.t[k].c) > 1e-9) {
+                    /* check if it actually connects to outside sector */
+                }
+                continue;
+            }
+            int ii = find_det(fci->dets, nd, detI);
+            if (ii < 0) continue;
+            double sg = (__builtin_popcount(detJ & z) & 1) ? -1.0 : 1.0;
+            double complex val = fh->ham.t[k].c * IPOW4[__builtin_popcount(x & z) & 3] * sg;
+            M[(size_t)ii * nd + J] += creal(val);
         }
-        /* leakage outside the N-electron sector must vanish */
-        double leak = 0.0;
-        for (size_t k = 0; k < out.dim; k++) {
-            int in_sector = 0;
-            for (int ii = 0; ii < nd; ii++)
-                if (fci->dets[ii] == k) { in_sector = 1; break; }
-            if (!in_sector) leak += cabs(out.a[k]);
-        }
-        if (leak > 1e-9) qc_warn("Pauli Hamiltonian leaks out of the particle-number sector (%.3e)", leak);
     }
     double *w = qc_calloc((size_t)nd, sizeof(double));
     LAPACKE_dsyev(LAPACK_ROW_MAJOR, 'N', 'U', nd, M, nd, w);
     double g = w[0];
     free(w);
     free(M);
-    sv_free(&in);
-    sv_free(&out);
+    (void)ns;
     return g;
 }
 

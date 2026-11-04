@@ -3,10 +3,10 @@ CC      ?= gcc
 GIT_REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LIBCINT ?= third_party/libcint
 
-CFLAGS  := -std=c17 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
+CFLAGS  := -std=c17 -O2 -g -fopenmp -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
            -Iinclude -I$(LIBCINT)/include -I/usr/include/x86_64-linux-gnu \
            -DQC_GIT_REV=\"$(GIT_REV)\" -DQC_DATA_DIR=\"$(CURDIR)/data\"
-LDLIBS  := -L$(LIBCINT)/lib -Wl,-rpath,$(CURDIR)/$(LIBCINT)/lib -lcint -lquadmath \
+LDLIBS  := -fopenmp -L$(LIBCINT)/lib -Wl,-rpath,$(CURDIR)/$(LIBCINT)/lib -lcint -lquadmath \
            -llapacke -lopenblas -lnlopt -lcjson -lcurl -lm
 
 SRC_LIB := $(shell find src -name '*.c' ! -name main.c)

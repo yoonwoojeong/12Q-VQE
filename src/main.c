@@ -14,10 +14,11 @@
 #ifndef QC_DATA_DIR
 #define QC_DATA_DIR "data"
 #endif
-#define CACHE_DIR "build/cache"
-#define RESULTS_DIR "results"
+#define CACHE_DIR "/home/sshs4/.gemini/antigravity/scratch/12Q-VQE/build/cache"
+#define RESULTS_DIR "/home/sshs4/.gemini/antigravity/scratch/12Q-VQE/results"
 
 typedef struct {
+    char mol[64];
     char basis[64];
     char results_dir[512];
     int electrons;      /* active electrons */
@@ -25,7 +26,13 @@ typedef struct {
     int first;          /* first active MO, -1 = default */
     int maxeval;
     int verbose;
+    int use_cobyla;
+    int use_adapt;
+    int adapt_max;
+    double adapt_tol;
     double bond;        /* Angstrom */
+    double rmin, rmax;  /* PES scan */
+    int npts;
 } Opts;
 
 typedef struct {
@@ -41,13 +48,21 @@ typedef struct {
 static void opts_default(Opts *o)
 {
     memset(o, 0, sizeof *o);
+    snprintf(o->mol, sizeof o->mol, "H2");
     snprintf(o->basis, sizeof o->basis, "cc-pVQZ");
     snprintf(o->results_dir, sizeof o->results_dir, "%s", RESULTS_DIR);
     o->electrons = 2;
     o->orbitals = 6;
     o->first = -1;
     o->maxeval = 4000;
+    o->use_cobyla = 0;   /* default: L-BFGS with analytic adjoint gradients */
+    o->use_adapt = 0;
+    o->adapt_max = 35;
+    o->adapt_tol = 1e-4;
     o->bond = 0.735;
+    o->rmin = 0.4;
+    o->rmax = 2.8;
+    o->npts = 13;
 }
 
 static const char *opt_value(int argc, char **argv, int *i, const char *name)
@@ -63,21 +78,42 @@ static void parse_opts(int argc, char **argv, Opts *o, int *consumed_flags)
     (void)consumed_flags;
     for (int i = 0; i < argc; i++) {
         const char *v;
-        if ((v = opt_value(argc, argv, &i, "--basis"))) snprintf(o->basis, sizeof o->basis, "%s", v);
+        if ((v = opt_value(argc, argv, &i, "--mol"))) snprintf(o->mol, sizeof o->mol, "%s", v);
+        else if ((v = opt_value(argc, argv, &i, "--basis"))) snprintf(o->basis, sizeof o->basis, "%s", v);
         else if ((v = opt_value(argc, argv, &i, "--electrons"))) o->electrons = atoi(v);
         else if ((v = opt_value(argc, argv, &i, "--orbitals"))) o->orbitals = atoi(v);
         else if ((v = opt_value(argc, argv, &i, "--first"))) o->first = atoi(v);
         else if ((v = opt_value(argc, argv, &i, "--maxeval"))) o->maxeval = atoi(v);
         else if ((v = opt_value(argc, argv, &i, "--bond"))) o->bond = atof(v);
+        else if ((v = opt_value(argc, argv, &i, "--rmin"))) o->rmin = atof(v);
+        else if ((v = opt_value(argc, argv, &i, "--rmax"))) o->rmax = atof(v);
+        else if ((v = opt_value(argc, argv, &i, "--npts"))) o->npts = atoi(v);
         else if ((v = opt_value(argc, argv, &i, "--results"))) snprintf(o->results_dir, sizeof o->results_dir, "%s", v);
+        else if ((v = opt_value(argc, argv, &i, "--opt"))) {
+            if (strcmp(v, "cobyla") == 0) o->use_cobyla = 1;
+            else if (strcmp(v, "lbfgs") == 0) o->use_cobyla = 0;
+            else qc_die("--opt must be 'lbfgs' or 'cobyla'");
+        }
+        else if ((v = opt_value(argc, argv, &i, "--ansatz"))) {
+            if (strcmp(v, "adapt") == 0) o->use_adapt = 1;
+            else if (strcmp(v, "uccsd") == 0 || strcmp(v, "givens") == 0) o->use_adapt = 0;
+        }
+        else if ((v = opt_value(argc, argv, &i, "--adapt-max"))) o->adapt_max = atoi(v);
+        else if ((v = opt_value(argc, argv, &i, "--adapt-tol"))) o->adapt_tol = atof(v);
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) o->verbose = 1;
     }
 }
 
 static const char *basis_path(const Opts *o, char *buf, size_t n)
 {
-    (void)o;
-    snprintf(buf, n, "%s/basis/cc-pVQZ.nw", QC_DATA_DIR);
+    if (strcmp(o->basis, "sto-3g") == 0 || strcmp(o->basis, "STO-3G") == 0)
+        snprintf(buf, n, "%s/basis/sto-3g.nw", QC_DATA_DIR);
+    else if (strcmp(o->basis, "cc-pVDZ") == 0 || strcmp(o->basis, "cc-pvdz") == 0)
+        snprintf(buf, n, "%s/basis/cc-pVDZ.nw", QC_DATA_DIR);
+    else if (strcmp(o->basis, "cc-pVQZ") == 0 || strcmp(o->basis, "cc-pvqz") == 0)
+        snprintf(buf, n, "%s/basis/cc-pVQZ.nw", QC_DATA_DIR);
+    else
+        snprintf(buf, n, "%s/basis/%s.nw", QC_DATA_DIR, o->basis);
     return buf;
 }
 
@@ -87,11 +123,12 @@ static void ensure_ints(Ctx *c, const Opts *o)
     char pth[1024];
     basis_path(o, pth, sizeof pth);
     memset(&c->mol, 0, sizeof c->mol);
-    mol_h2_setup(&c->mol, o->bond, 0, 1);
+    if (mol_setup_by_name(&c->mol, o->mol, o->bond) != 0)
+        qc_die("unknown molecule '%s' (supported: H2, HeH+, LiH, BeH2, H4)", o->mol);
     basis_build(&c->bs, &c->mol, pth, o->basis);
     qc_mkdir_p(CACHE_DIR);
     char cache[512];
-    snprintf(cache, sizeof cache, CACHE_DIR "/ao_%s_H2_%.4f.bin", o->basis, o->bond);
+    snprintf(cache, sizeof cache, CACHE_DIR "/ao_%s_%s_%.4f.bin", o->basis, o->mol, o->bond);
     if (ao_integrals_read(&c->ints, cache, c->bs.nao) != 0) {
         double t0 = qc_wall_time();
         ao_integrals_compute(&c->ints, &c->bs, &c->mol);
@@ -144,7 +181,7 @@ static void ensure_rhf(Ctx *c, const Opts *o)
     ensure_ints(c, o);
     if (c->have_rhf) return;
     char cache[512];
-    snprintf(cache, sizeof cache, CACHE_DIR "/rhf_%s_H2_%.4f.bin", o->basis, o->bond);
+    snprintf(cache, sizeof cache, CACHE_DIR "/rhf_%s_%s_%.4f.bin", o->basis, o->mol, o->bond);
     if (load_rhf(&c->rhf, cache, c->ints.nao) == 0) {
         printf("  loaded RHF orbitals from %s\n", cache);
     } else {
@@ -212,7 +249,8 @@ int cmd_prepare(int argc, char **argv)
         double d = fabs(c.ints.S[(size_t)i * c.ints.nao + i] - 1.0);
         if (d > maxdev) maxdev = d;
     }
-    printf("  basis            : %s (data/basis/cc-pVQZ.nw)\n", o.basis);
+    printf("  molecule         : %s (%d electrons, R = %.3f A)\n", o.mol, c.mol.nelec, o.bond);
+    printf("  basis            : %s\n", o.basis);
     printf("  nuclear repulsion: %.12f Eh\n", c.mol.enuc);
     printf("  AO functions     : %d (spherical)\n", c.bs.nao);
     printf("  max |S_ii - 1|   : %.3e\n", maxdev);
@@ -230,6 +268,7 @@ int cmd_rhf(int argc, char **argv)
     Ctx c; memset(&c, 0, sizeof c);
     o.verbose = 1;
     ensure_rhf(&c, &o);
+    printf("  molecule         : %s (R = %.3f A)\n", o.mol, o.bond);
     printf("  basis            : %s   (full AO basis, %d functions)\n", o.basis, c.ints.nao);
     printf("  RHF total energy : %.12f Eh\n", c.rhf.energy);
     printf("  nuclear repulsion: %.12f Eh\n", c.mol.enuc);
@@ -239,6 +278,7 @@ int cmd_rhf(int argc, char **argv)
     printf("...\n");
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "scope", "full-basis RHF (not active space)");
+    cJSON_AddStringToObject(j, "molecule", o.mol);
     cJSON_AddStringToObject(j, "basis", o.basis);
     cJSON_AddNumberToObject(j, "nao", c.ints.nao);
     cJSON_AddNumberToObject(j, "bond_angstrom", o.bond);
@@ -261,16 +301,19 @@ int cmd_active_space(int argc, char **argv)
 {
     Opts o; opts_default(&o); parse_opts(argc, argv, &o, NULL);
     if (2 * o.orbitals > QC_MAX_QUBIT_SV)
-        qc_die("CAS(%d,%d) needs %d qubits; the statevector simulator and Pauli cross-checks support at most %d qubits (%d spatial orbitals)",
+        qc_die("CAS(%d,%d) needs %d qubits; the statevector simulator supports at most %d qubits (%d spatial orbitals)",
                o.electrons, o.orbitals, 2 * o.orbitals, QC_MAX_QUBIT_SV, QC_MAX_QUBIT_SV / 2);
-    qc_print_banner("active space CAS(2,6)");
+    char banner[128];
+    snprintf(banner, sizeof banner, "active space %s CAS(%d,%d)", o.mol, o.electrons, o.orbitals);
+    qc_print_banner(banner);
     Ctx c; memset(&c, 0, sizeof c);
     build_active(&c, &o);
+    printf("  molecule         : %s (%d total electrons, R = %.3f A)\n", o.mol, c.mol.nelec, o.bond);
     printf("  full basis       : %s, %d AO functions (RHF run in the full basis)\n", o.basis, c.ints.nao);
     printf("  RHF energy       : %.12f Eh\n", c.rhf.energy);
     printf("  active space     : CAS(%d,%d) = %d electrons in %d spatial orbitals (MO %d..%d)\n",
            o.electrons, o.orbitals, o.electrons, o.orbitals, c.as.first, c.as.first + o.orbitals - 1);
-    printf("  inactive core    : %d doubly occupied MOs folded into E_core\n", c.as.ncore);
+    printf("  inactive core    : %d doubly occupied MOs folded into E_core (%.8f Eh)\n", c.as.ncore, c.as.ecore);
     printf("  qubits           : %d (spin orbitals, Jordan-Wigner)\n", c.fh.nspin);
     print_rule();
     double comm, herm, hfe;
@@ -287,11 +330,12 @@ int cmd_active_space(int argc, char **argv)
     printf("  CAS-FCI energy   : %.12f Eh   (%d determinants, %.2f s)\n", fci.ground, fci.ndet, tf);
     printf("  Pauli-restricted : %.12f Eh   |diff| = %.3e\n", pg, fabs(pg - fci.ground));
     printf("  Pauli terms      : %zu\n", c.fh.ham.n);
-    printf("  scope            : active-space CAS(%d,%d) energy; NOT the full cc-pVQZ energy\n", o.electrons, o.orbitals);
+    printf("  scope            : active-space CAS(%d,%d) energy; NOT the full %s energy\n", o.electrons, o.orbitals, o.basis);
 
     /* write results */
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "scope", "CAS active space (not full basis)");
+    cJSON_AddStringToObject(j, "molecule", o.mol);
     cJSON_AddStringToObject(j, "basis", o.basis);
     cJSON_AddNumberToObject(j, "bond_angstrom", o.bond);
     cJSON_AddNumberToObject(j, "active_electrons", o.electrons);
@@ -344,51 +388,77 @@ int cmd_vqe(int argc, char **argv)
     Opts o; opts_default(&o);
     const char *mode = "local";
     int submit = 0, yes = 0;
-    int nargs = 0;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) { mode = argv[++i]; continue; }
         if (strcmp(argv[i], "--submit") == 0) { submit = 1; continue; }
         if (strcmp(argv[i], "--yes") == 0) { yes = 1; continue; }
-        nargs++;
     }
-    (void)nargs;
     parse_opts(argc, argv, &o, NULL);
     if (strcmp(mode, "hardware") == 0) {
-        /* hardware path lives in hw/hw_cli.c and needs the same parsed options */
         extern int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes);
         return hw_run_vqe_hardware(argc, argv, submit, yes);
     }
     if (strcmp(mode, "local") != 0) qc_die("unknown --mode '%s' (local|hardware)", mode);
 
-    qc_print_banner("VQE (local statevector, UCCSD + COBYLA)");
+    char banner[128];
+    snprintf(banner, sizeof banner, "VQE (%s, %s)", o.use_adapt ? "ADAPT-VQE + L-BFGS" : "UCCSD",
+             o.use_cobyla ? "COBYLA" : "L-BFGS + Adjoint Grad");
+    qc_print_banner(banner);
     Ctx c; memset(&c, 0, sizeof c);
     build_active(&c, &o);
-    printf("  CAS(%d,%d), %d qubits, Pauli terms %zu\n", o.electrons, o.orbitals, c.fh.nspin, c.fh.ham.n);
+    printf("  %s (%s, R=%.3f A), CAS(%d,%d), %d qubits, Pauli terms %zu\n",
+           o.mol, o.basis, o.bond, o.electrons, o.orbitals, c.fh.nspin, c.fh.ham.n);
 
     UCCSD u;
     uccsd_build(&u, c.fh.nspin, o.electrons);
-    printf("  UCCSD: %d spin-conserving excitations (singles+doubles)\n", u.nexc);
+    printf("  operator pool: %d spin-conserving excitations (singles+doubles)\n", u.nexc);
 
-    VQEOptions vo = {o.maxeval, 0.1, 1e-9, o.verbose};
-    VQEResult vr;
-    vqe_optimize_local(&u, &c.fh.ham, &vo, &vr);
-
-    /* references */
     FCIResult fci;
     fci_solve(&fci, &c.fh, &c.as, o.electrons);
     double eref_rhf = c.rhf.energy;
 
-    printf("  COBYLA: %s after %d evaluations (%.2f s)\n", vr.converged ? "converged" : "stopped", vr.nfev, vr.seconds);
+    Circuit circ;
+    double vqe_E = 0.0, secs = 0.0;
+    int nfev = 0, conv = 0, nparam = 0;
+    double *theta_save = NULL;
+
+    if (o.use_adapt) {
+        AdaptResult ar;
+        adapt_vqe_optimize(&u, &c.fh.ham, o.adapt_max, o.adapt_tol, o.verbose, &ar, &circ);
+        vqe_E = ar.energy;
+        secs = ar.seconds;
+        nfev = ar.nfev;
+        conv = ar.converged;
+        nparam = ar.n_ops;
+        theta_save = qc_calloc((size_t)(nparam ? nparam : 1), sizeof(double));
+        if (nparam) memcpy(theta_save, ar.theta, (size_t)nparam * sizeof(double));
+        printf("  ADAPT-VQE: %s with %d operators (%d L-BFGS evals, %.3f s), max|g| = %.2e\n",
+               conv ? "converged" : "stopped", ar.n_ops, ar.nfev, ar.seconds, ar.max_grad);
+        adapt_result_free(&ar);
+    } else {
+        VQEOptions vo = {o.maxeval, 0.1, 1e-10, o.verbose, o.use_cobyla};
+        VQEResult vr;
+        vqe_optimize_local(&u, &c.fh.ham, &vo, &vr);
+        vqe_E = vr.energy;
+        secs = vr.seconds;
+        nfev = vr.nfev;
+        conv = vr.converged;
+        nparam = vr.nparam;
+        theta_save = qc_calloc((size_t)nparam, sizeof(double));
+        memcpy(theta_save, vr.theta, (size_t)nparam * sizeof(double));
+        uccsd_circuit(&u, vr.theta, &circ);
+        printf("  %s: %s after %d evaluations (%.3f s)\n",
+               o.use_cobyla ? "COBYLA" : "L-BFGS", vr.converged ? "converged" : "stopped", vr.nfev, vr.seconds);
+        vqe_result_free(&vr);
+    }
+
     print_rule();
     printf("  RHF (full basis)       : %.12f Eh\n", eref_rhf);
     printf("  CAS(%d,%d) FCI reference : %.12f Eh\n", o.electrons, o.orbitals, fci.ground);
-    printf("  CAS(%d,%d) VQE (local)   : %.12f Eh\n", o.electrons, o.orbitals, vr.energy);
-    printf("  VQE - FCI              : %+.3e Eh  (variational: must be >= 0)\n", vr.energy - fci.ground);
+    printf("  CAS(%d,%d) VQE (local)   : %.12f Eh\n", o.electrons, o.orbitals, vqe_E);
+    printf("  VQE - FCI              : %+.3e Eh  (variational: must be >= 0)\n", vqe_E - fci.ground);
     print_rule();
 
-    /* logical circuit */
-    Circuit circ;
-    uccsd_circuit(&u, vr.theta, &circ);
     char qpath[600], jpath[600];
     snprintf(qpath, sizeof qpath, "%s/vqe_local_CAS%d_%d.qasm", o.results_dir, o.electrons, o.orbitals);
     qc_mkdir_p(o.results_dir);
@@ -400,18 +470,22 @@ int cmd_vqe(int argc, char **argv)
 
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "scope", "CAS active space VQE (local statevector)");
+    cJSON_AddStringToObject(j, "molecule", o.mol);
     cJSON_AddStringToObject(j, "basis", o.basis);
+    cJSON_AddStringToObject(j, "ansatz", o.use_adapt ? "adapt" : "uccsd");
+    cJSON_AddStringToObject(j, "optimizer", o.use_cobyla ? "cobyla" : "lbfgs");
     cJSON_AddNumberToObject(j, "active_electrons", o.electrons);
     cJSON_AddNumberToObject(j, "active_orbitals", o.orbitals);
     cJSON_AddNumberToObject(j, "qubits", c.fh.nspin);
     cJSON_AddNumberToObject(j, "rhf_full_basis_Eh", eref_rhf);
     cJSON_AddNumberToObject(j, "fci_cas_Eh", fci.ground);
-    cJSON_AddNumberToObject(j, "vqe_local_Eh", vr.energy);
-    cJSON_AddNumberToObject(j, "vqe_minus_fci_Eh", vr.energy - fci.ground);
-    cJSON_AddNumberToObject(j, "nfev", vr.nfev);
-    cJSON_AddNumberToObject(j, "converged", vr.converged);
-    cJSON_AddNumberToObject(j, "nparam", vr.nparam);
-    cJSON *th = cJSON_CreateDoubleArray(vr.theta, vr.nparam);
+    cJSON_AddNumberToObject(j, "vqe_local_Eh", vqe_E);
+    cJSON_AddNumberToObject(j, "vqe_minus_fci_Eh", vqe_E - fci.ground);
+    cJSON_AddNumberToObject(j, "nfev", nfev);
+    cJSON_AddNumberToObject(j, "seconds", secs);
+    cJSON_AddNumberToObject(j, "converged", conv);
+    cJSON_AddNumberToObject(j, "nparam", nparam);
+    cJSON *th = cJSON_CreateDoubleArray(theta_save, nparam);
     cJSON_AddItemToObject(j, "theta", th);
     cJSON_AddNumberToObject(j, "logical_gates", circ.ng);
     cJSON_AddNumberToObject(j, "logical_depth", circ_depth(&circ));
@@ -424,11 +498,101 @@ int cmd_vqe(int argc, char **argv)
     results_write_json(jpath, s);
     free(s);
     cJSON_Delete(j);
+    free(theta_save);
     circ_free(&circ);
     fci_free(&fci);
-    vqe_result_free(&vr);
     uccsd_free(&u);
-    (void)submit; (void)yes;
+    fermion_free(&c.fh);
+    active_space_free(&c.as);
+    rhf_free(&c.rhf);
+    ao_integrals_free(&c.ints);
+    basis_free(&c.bs);
+    return 0;
+}
+
+int cmd_pes(int argc, char **argv)
+{
+    Opts o; opts_default(&o);
+    parse_opts(argc, argv, &o, NULL);
+    char banner[256];
+    snprintf(banner, sizeof banner, "Potential Energy Surface Scan: %s (%s, CAS(%d,%d))",
+             o.mol, o.basis, o.electrons, o.orbitals);
+    qc_print_banner(banner);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "molecule", o.mol);
+    cJSON_AddStringToObject(root, "basis", o.basis);
+    cJSON_AddNumberToObject(root, "active_electrons", o.electrons);
+    cJSON_AddNumberToObject(root, "active_orbitals", o.orbitals);
+    cJSON *pts = cJSON_AddArrayToObject(root, "points");
+
+    printf("  %-8s  %-16s  %-16s  %-16s  %-16s  %-10s  %-8s\n",
+           "R (A)", "RHF (Eh)", "CAS-FCI (Eh)", "UCCSD-VQE (Eh)", "ADAPT-VQE (Eh)", "|VQE-FCI|", "ADAPT 2Q");
+    print_rule();
+
+    for (int i = 0; i < o.npts; i++) {
+        double r = (o.npts == 1) ? o.bond : o.rmin + (o.rmax - o.rmin) * (double)i / (double)(o.npts - 1);
+        Opts oi = o;
+        oi.bond = r;
+        oi.verbose = 0;
+        Ctx c; memset(&c, 0, sizeof c);
+
+        /* silence per-point cache prints by building directly */
+        char pth[1024];
+        basis_path(&oi, pth, sizeof pth);
+        mol_setup_by_name(&c.mol, oi.mol, r);
+        basis_build(&c.bs, &c.mol, pth, oi.basis);
+        ao_integrals_compute(&c.ints, &c.bs, &c.mol);
+        rhf_run(&c.rhf, &c.ints, &c.mol, 200, 1e-10, 1e-8, 0);
+        int first = default_first(&oi, &c.mol);
+        active_space_build(&c.as, &c.ints, &c.rhf, &c.mol, oi.electrons, oi.orbitals, first);
+        fermion_build_hamiltonian(&c.fh, &c.as);
+
+        FCIResult fci;
+        fci_solve(&fci, &c.fh, &c.as, oi.electrons);
+
+        UCCSD u;
+        uccsd_build(&u, c.fh.nspin, oi.electrons);
+        VQEOptions vo = {1000, 0.1, 1e-10, 0, 0};
+        VQEResult vr;
+        vqe_optimize_local(&u, &c.fh.ham, &vo, &vr);
+
+        AdaptResult ar;
+        Circuit acirc;
+        adapt_vqe_optimize(&u, &c.fh.ham, oi.adapt_max, oi.adapt_tol, 0, &ar, &acirc);
+        int adapt_2q = circ_count_2q(&acirc);
+
+        printf("  %-8.3f  %16.10f  %16.10f  %16.10f  %16.10f  %10.2e  %4d (%2d ops)\n",
+               r, c.rhf.energy, fci.ground, vr.energy, ar.energy, fabs(vr.energy - fci.ground), adapt_2q, ar.n_ops);
+
+        cJSON *pt = cJSON_CreateObject();
+        cJSON_AddNumberToObject(pt, "bond_angstrom", r);
+        cJSON_AddNumberToObject(pt, "rhf_Eh", c.rhf.energy);
+        cJSON_AddNumberToObject(pt, "fci_Eh", fci.ground);
+        cJSON_AddNumberToObject(pt, "uccsd_vqe_Eh", vr.energy);
+        cJSON_AddNumberToObject(pt, "adapt_vqe_Eh", ar.energy);
+        cJSON_AddNumberToObject(pt, "adapt_ops", ar.n_ops);
+        cJSON_AddNumberToObject(pt, "adapt_2q_gates", adapt_2q);
+        cJSON_AddItemToArray(pts, pt);
+
+        circ_free(&acirc);
+        adapt_result_free(&ar);
+        vqe_result_free(&vr);
+        uccsd_free(&u);
+        fci_free(&fci);
+        fermion_free(&c.fh);
+        active_space_free(&c.as);
+        rhf_free(&c.rhf);
+        ao_integrals_free(&c.ints);
+        basis_free(&c.bs);
+    }
+    print_rule();
+    char jpath[1024];
+    snprintf(jpath, sizeof jpath, "%s/pes_%s_%s_CAS%d_%d.json", o.results_dir, o.mol, o.basis, o.electrons, o.orbitals);
+    char *s = cJSON_Print(root);
+    results_write_json(jpath, s);
+    free(s);
+    cJSON_Delete(root);
     return 0;
 }
 
@@ -450,10 +614,11 @@ int main(int argc, char **argv)
     if (argc < 2) {
         fprintf(stderr,
                 "usage: qchem-vqe <command> [options]\n"
-                "  prepare --basis cc-pVQZ\n"
-                "  rhf [--basis cc-pVQZ]\n"
-                "  active-space --electrons 2 --orbitals 6 [--first N]\n"
-                "  vqe --mode local [--maxeval N] [--electrons 2 --orbitals 6]\n"
+                "  prepare [--mol H2|HeH+|LiH|BeH2|H4] [--basis cc-pVQZ|cc-pVDZ|sto-3g] [--bond R]\n"
+                "  rhf [--mol NAME] [--basis NAME] [--bond R]\n"
+                "  active-space --electrons N --orbitals M [--first K] [--mol NAME] [--basis NAME]\n"
+                "  vqe --mode local [--ansatz uccsd|adapt] [--opt lbfgs|cobyla] [--mol NAME]\n"
+                "  pes [--mol NAME] [--basis NAME] [--rmin R0 --rmax R1 --npts N]\n"
                 "  hardware list | inspect [--backend NAME] | preflight [--backend NAME]\n"
                 "  vqe --mode hardware [--submit [--yes]]\n"
                 "  job status JOB_ID | job results JOB_ID\n"
@@ -467,6 +632,7 @@ int main(int argc, char **argv)
     else if (strcmp(cmd, "rhf") == 0) rc = cmd_rhf(argc - 2, argv + 2);
     else if (strcmp(cmd, "active-space") == 0) rc = cmd_active_space(argc - 2, argv + 2);
     else if (strcmp(cmd, "vqe") == 0) rc = cmd_vqe(argc - 2, argv + 2);
+    else if (strcmp(cmd, "pes") == 0) rc = cmd_pes(argc - 2, argv + 2);
     else if (strcmp(cmd, "hardware") == 0) rc = cmd_hardware(argc - 2, argv + 2);
     else if (strcmp(cmd, "job") == 0) rc = cmd_job(argc - 2, argv + 2);
     else if (strcmp(cmd, "auth") == 0) rc = cmd_auth(argc - 2, argv + 2);

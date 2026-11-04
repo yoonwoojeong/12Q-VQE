@@ -21,6 +21,7 @@
 
 typedef struct {
     char backend[128];
+    char results_dir[512];
     double precision;
     double bond;
     int candidates;
@@ -33,6 +34,7 @@ typedef struct {
 static void hw_opts_parse(int argc, char **argv, HwOpts *o)
 {
     memset(o, 0, sizeof *o);
+    snprintf(o->results_dir, sizeof o->results_dir, "/home/sshs4/.gemini/antigravity/scratch/12Q-VQE/results");
     o->precision = 0.02;
     o->bond = 0.735;
     o->candidates = 8;
@@ -46,6 +48,7 @@ static void hw_opts_parse(int argc, char **argv, HwOpts *o)
             continue;
         }
         if (strcmp(argv[i], "--givens-trunc") == 0 && i + 1 < argc) { o->gtrunc = atof(argv[++i]); continue; }
+        if (strcmp(argv[i], "--results") == 0 && i + 1 < argc) { snprintf(o->results_dir, sizeof o->results_dir, "%s", argv[++i]); continue; }
         if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) snprintf(o->backend, sizeof o->backend, "%s", argv[++i]);
         else if (strcmp(argv[i], "--precision") == 0 && i + 1 < argc) o->precision = atof(argv[++i]);
         else if (strcmp(argv[i], "--yes") == 0) o->yes = 1;
@@ -63,9 +66,11 @@ int hw_get_session(IBMSession *s)
     return 0;
 }
 
-static void ensure_dir(void)
+static void ensure_dir(const HwOpts *o)
 {
-    qc_mkdir_p(HW_DIR);
+    char d[1024];
+    snprintf(d, sizeof d, "%s/hardware", o->results_dir);
+    qc_mkdir_p(d);
 }
 
 /* Select the backend: explicit --backend, or the best online QPU by layout score. */
@@ -206,13 +211,13 @@ static int cmd_list(const HwOpts *o)
     return 0;
 }
 
-static void save_calibration_snapshot(const char *backend, const char *cfg, const char *props)
+static void save_calibration_snapshot(const HwOpts *o, const char *backend, const char *cfg, const char *props)
 {
-    ensure_dir();
-    char p[512];
-    snprintf(p, sizeof p, HW_DIR "/%s_configuration.json", backend);
+    ensure_dir(o);
+    char p[1024];
+    snprintf(p, sizeof p, "%s/hardware/%s_configuration.json", o->results_dir, backend);
     results_write_json(p, cfg);
-    snprintf(p, sizeof p, HW_DIR "/%s_properties.json", backend);
+    snprintf(p, sizeof p, "%s/hardware/%s_properties.json", o->results_dir, backend);
     results_write_json(p, props);
 }
 
@@ -227,7 +232,7 @@ static int cmd_inspect(const HwOpts *o, int preflight)
     /* re-fetch raw documents for the snapshot */
     char *cfg = NULL, *props = NULL, *st = NULL;
     ibm_get_backend_raw(&s, cal.backend_name, &cfg, &props, &st);
-    save_calibration_snapshot(cal.backend_name, cfg, props);
+    save_calibration_snapshot(o, cal.backend_name, cfg, props);
 
     printf("== backend %s (version %s)\n", cal.backend_name, cal.backend_version);
     printf("  qubits %d, couplers %d, basis: %s%s\n", cal.nqubit, cal.nedge, cal.has_cz ? "cz " : "", cal.has_ecr ? "ecr" : "");
@@ -266,8 +271,8 @@ static int cmd_inspect(const HwOpts *o, int preflight)
         UCCSD u;
         uccsd_build(&u, cs.fh.nspin, 2);
         FILE *f = NULL;
-        char tpath[512];
-        snprintf(tpath, sizeof tpath, "results/vqe_local_CAS2_6.json");
+        char tpath[1024];
+        snprintf(tpath, sizeof tpath, "%s/vqe_local_CAS2_6.json", o->results_dir);
         f = fopen(tpath, "rb");
         double *theta = qc_calloc((size_t)u.nexc, sizeof(double));
         if (f) {
@@ -383,8 +388,8 @@ static int cmd_job_results(const HwOpts *o)
     }
 
     /* submission record written at submit time */
-    char rpath[512];
-    snprintf(rpath, sizeof rpath, HW_DIR "/%s.json", o->job_id);
+    char rpath[1024];
+    snprintf(rpath, sizeof rpath, "%s/hardware/%s.json", o->results_dir, o->job_id);
     size_t rlen = 0;
     char *rec_txt = qc_read_file(rpath, &rlen);
     if (!rec_txt) qc_die("no submission record %s (was this job submitted by this tool?)", rpath);
@@ -442,7 +447,7 @@ static int cmd_job_results(const HwOpts *o)
     cJSON_AddNumberToObject(out, "n_observables", nobs);
     cJSON_AddItemToObject(out, "submission", cJSON_Duplicate(rec, 1));
     char *txt = cJSON_Print(out);
-    snprintf(rpath, sizeof rpath, HW_DIR "/%s_results.json", o->job_id);
+    snprintf(rpath, sizeof rpath, "%s/hardware/%s_results.json", o->results_dir, o->job_id);
     results_write_json(rpath, txt);
     free(txt);
     cJSON_Delete(out);
@@ -486,8 +491,8 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     qc_print_banner("VQE on IBM Quantum hardware (evaluation of the optimised UCCSD state)");
 
     /* optimised local parameters */
-    char tpath[512];
-    snprintf(tpath, sizeof tpath, "results/vqe_local_CAS2_6.json");
+    char tpath[1024];
+    snprintf(tpath, sizeof tpath, "%s/vqe_local_CAS2_6.json", o.results_dir);
     size_t tl = 0;
     char *txt = qc_read_file(tpath, &tl);
     if (!txt) qc_die("missing %s: run `qchem-vqe vqe --mode local` first", tpath);
@@ -575,7 +580,7 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     printf("  submitted job     : %s\n", job_id);
 
     /* submission record: everything needed to evaluate the job later */
-    ensure_dir();
+    ensure_dir(&o);
     cJSON *rec = cJSON_CreateObject();
     cJSON_AddStringToObject(rec, "job_id", job_id);
     cJSON_AddStringToObject(rec, "backend", cal.backend_name);
@@ -612,10 +617,10 @@ int hw_run_vqe_hardware(int argc, char **argv, int submit, int yes)
     cJSON_AddItemToObject(rec, "metadata", cJSON_Parse(meta));
     free(meta);
     char *rtxt = cJSON_Print(rec);
-    char rpath[512];
-    snprintf(rpath, sizeof rpath, HW_DIR "/%s.json", job_id);
+    char rpath[1024];
+    snprintf(rpath, sizeof rpath, "%s/hardware/%s.json", o.results_dir, job_id);
     results_write_json(rpath, rtxt);
-    snprintf(rpath, sizeof rpath, HW_DIR "/%s.qasm", job_id);
+    snprintf(rpath, sizeof rpath, "%s/hardware/%s.qasm", o.results_dir, job_id);
     results_write_json(rpath, qasm);
     free(rtxt);
     cJSON_Delete(rec);

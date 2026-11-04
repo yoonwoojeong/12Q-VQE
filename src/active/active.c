@@ -7,6 +7,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "qchem.h"
 
+#include <cblas.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,53 +16,35 @@
 static double *ao2mo4(int n, const double *eri, const double *Ca, int na, const double *Cb, int nb,
                       const double *Cc, int nc, const double *Cd, int nd)
 {
-    size_t n3 = (size_t)n * n * n;
-    /* step 1: contract first index */
+    size_t n2 = (size_t)n * n;
+    size_t n3 = n2 * (size_t)n;
+    /* step 1: contract first index mu -> a: T1[a, nu*la*si] = Ca^T[a, mu] * eri[mu, nu*la*si] */
     double *T1 = qc_calloc((size_t)na * n3, sizeof(double));
-    for (int a = 0; a < na; a++)
-        for (size_t mu = 0; mu < (size_t)n; mu++) {
-            double c = Ca[mu * na + a];
-            if (c == 0.0) continue;
-            const double *src = eri + mu * n3;
-            double *dst = T1 + (size_t)a * n3;
-            for (size_t k = 0; k < n3; k++) dst[k] += c * src[k];
-        }
-    /* step 2: second index nu -> b: T2[a][b][la][si] */
-    double *T2 = qc_calloc((size_t)na * nb * n * n, sizeof(double));
-    for (int a = 0; a < na; a++)
-        for (int b = 0; b < nb; b++)
-            for (int nu = 0; nu < n; nu++) {
-                double c = Cb[(size_t)nu * nb + b];
-                if (c == 0.0) continue;
-                const double *src = T1 + (size_t)a * n3 + (size_t)nu * n * n;
-                double *dst = T2 + ((size_t)a * nb + b) * n * n;
-                for (size_t k = 0; k < (size_t)n * n; k++) dst[k] += c * src[k];
-            }
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                na, (int)n3, n, 1.0, Ca, na, eri, (int)n3, 0.0, T1, (int)n3);
+
+    /* step 2: second index nu -> b: T2[a, b, la*si] = sum_nu Cb^T[b, nu] * T1[a, nu, la*si] */
+    double *T2 = qc_calloc((size_t)na * nb * n2, sizeof(double));
+    for (int a = 0; a < na; a++) {
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    nb, (int)n2, n, 1.0, Cb, nb, T1 + (size_t)a * n3, (int)n2,
+                    0.0, T2 + (size_t)a * nb * n2, (int)n2);
+    }
     free(T1);
-    /* step 3: la -> c : T3[a][b][c][si] */
+
+    /* step 3: la -> c : T3[a*nb + b, c, si] = sum_la Cc^T[c, la] * T2[a*nb + b, la, si] */
     double *T3 = qc_calloc((size_t)na * nb * nc * n, sizeof(double));
-    for (int a = 0; a < na; a++)
-        for (int b = 0; b < nb; b++)
-            for (int c = 0; c < nc; c++)
-                for (int la = 0; la < n; la++) {
-                    double cc = Cc[(size_t)la * nc + c];
-                    if (cc == 0.0) continue;
-                    const double *src = T2 + (((size_t)a * nb + b) * n + la) * n;
-                    double *dst = T3 + (((size_t)a * nb + b) * nc + c) * n;
-                    for (int si = 0; si < n; si++) dst[si] += cc * src[si];
-                }
+    for (int ab = 0; ab < na * nb; ab++) {
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    nc, n, n, 1.0, Cc, nc, T2 + (size_t)ab * n2, n,
+                    0.0, T3 + (size_t)ab * nc * n, n);
+    }
     free(T2);
-    /* step 4: si -> d : out[a][b][c][d] */
+
+    /* step 4: si -> d : out[a*nb*nc + c, d] = sum_si T3[a*nb*nc + c, si] * Cd[si, d] */
     double *out = qc_calloc((size_t)na * nb * nc * nd, sizeof(double));
-    for (int a = 0; a < na; a++)
-        for (int b = 0; b < nb; b++)
-            for (int c = 0; c < nc; c++)
-                for (int d = 0; d < nd; d++) {
-                    double s = 0.0;
-                    const double *src = T3 + (((size_t)a * nb + b) * nc + c) * n;
-                    for (int si = 0; si < n; si++) s += src[si] * Cd[(size_t)si * nd + d];
-                    out[(((size_t)a * nb + b) * nc + c) * nd + d] = s;
-                }
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                na * nb * nc, nd, n, 1.0, T3, n, Cd, nd, 0.0, out, nd);
     free(T3);
     return out;
 }
@@ -70,18 +53,8 @@ static double *ao2mo4(int n, const double *eri, const double *Ca, int na, const 
 static void mo1e(int n, const double *M, const double *Ca, int na, const double *Cb, int nb, double *out)
 {
     double *tmp = qc_calloc((size_t)n * nb, sizeof(double));
-    for (int mu = 0; mu < n; mu++)
-        for (int b = 0; b < nb; b++) {
-            double s = 0.0;
-            for (int nu = 0; nu < n; nu++) s += M[(size_t)mu * n + nu] * Cb[(size_t)nu * nb + b];
-            tmp[(size_t)mu * nb + b] = s;
-        }
-    for (int a = 0; a < na; a++)
-        for (int b = 0; b < nb; b++) {
-            double s = 0.0;
-            for (int mu = 0; mu < n; mu++) s += Ca[(size_t)mu * na + a] * tmp[(size_t)mu * nb + b];
-            out[(size_t)a * nb + b] = s;
-        }
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n, nb, n, 1.0, M, n, Cb, nb, 0.0, tmp, nb);
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, na, nb, n, 1.0, Ca, na, tmp, nb, 0.0, out, nb);
     free(tmp);
 }
 

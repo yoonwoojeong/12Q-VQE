@@ -1,0 +1,28 @@
+{
+	"scope":	"CAS active space VQE (local statevector)",
+	"molecule":	"LiH",
+	"basis":	"sto-3g",
+	"ansatz":	"adapt",
+	"optimizer":	"lbfgs",
+	"active_electrons":	2,
+	"active_orbitals":	5,
+	"qubits":	10,
+	"rhf_full_basis_Eh":	-7.8620238740137154,
+	"fci_cas_Eh":	-7.8821745198891628,
+	"vqe_local_Eh":	-7.8821745198891335,
+	"vqe_minus_fci_Eh":	2.9309887850104133e-14,
+	"nfev":	101,
+	"seconds":	0.8886173239989148,
+	"converged":	1,
+	"nparam":	10,
+	"theta":	[-0.11386927086263508, 0.059434911818221928, -0.0595401706449213, -0.03622507836814165, -0.0276326477280452, -0.02764320344124728, -0.0376006263956348, -0.037600619813087245, -0.0053147920433753932, -0.0053147881553807438],
+	"logical_gates":	1210,
+	"logical_depth":	756,
+	"logical_2q":	528,
+	"metadata":	{
+		"program":	"qchem-vqe",
+		"version":	"0.1.0",
+		"git_revision":	"037fcf6",
+		"timestamp_utc":	"2026-11-04T06:00:48Z"
+	}
+}

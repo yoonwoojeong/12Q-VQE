@@ -1,0 +1,27 @@
+{
+	"scope":	"CAS active space (not full basis)",
+	"molecule":	"H2",
+	"basis":	"cc-pVQZ",
+	"bond_angstrom":	0.735,
+	"active_electrons":	2,
+	"active_orbitals":	8,
+	"active_spin_orbitals":	16,
+	"first_mo":	0,
+	"inactive_doubly_occupied":	0,
+	"qubits":	16,
+	"pauli_terms":	1241,
+	"rhf_full_basis_Eh":	-1.1334934589979522,
+	"active_space_hf_Eh":	-1.1334934589979522,
+	"fci_cas_Eh":	-1.149445469725233,
+	"fci_pauli_restricted_Eh":	-1.1494454697252237,
+	"validation_passed":	1,
+	"validation_comm_norm":	1.8556548349663161e-13,
+	"validation_herm_err":	2.27373675443232e-12,
+	"validation_hf_energy_err":	7.105427357601e-15,
+	"metadata":	{
+		"program":	"qchem-vqe",
+		"version":	"0.1.0",
+		"git_revision":	"037fcf6",
+		"timestamp_utc":	"2026-11-04T06:01:54Z"
+	}
+}

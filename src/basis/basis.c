@@ -3,9 +3,10 @@
  *
  * The basis file is the Basis Set Exchange NWChem export (spherical). Each
  * "column" of a shell block is one contracted spherical shell; primitives with
- * zero coefficient in a column are dropped. Primitive normalisation is applied
- * for libcint, and each contracted shell is then renormalised using libcint's
- * own overlap so that the diagonal of S is exactly 1.
+ * zero coefficient in a column are dropped. SP blocks split into an S and a P
+ * shell. Primitive normalisation is applied for libcint, and each contracted
+ * shell is then renormalised using libcint's own overlap so that the diagonal
+ * of S is exactly 1.
  */
 #define _POSIX_C_SOURCE 200809L
 #include "qchem.h"
@@ -18,20 +19,10 @@
 #include <string.h>
 
 #define PTR_ENV_OFFSET 20
-#define MAX_SHELL_TOTAL 256
+#define MAX_SHELL_TOTAL 512
 
-void mol_h2_setup(Molecule *m, double bond_angstrom, int charge, int mult)
+static void compute_enuc(Molecule *m)
 {
-    memset(m, 0, sizeof *m);
-    double r = 0.5 * bond_angstrom * QC_BOHR_PER_ANG;
-    m->natom = 2;
-    m->Z[0] = 1;
-    m->Z[1] = 1;
-    m->xyz[0][2] = -r;
-    m->xyz[1][2] = +r;
-    m->charge = charge;
-    m->mult = mult;
-    m->nelec = 2 - charge;
     double enuc = 0.0;
     for (int i = 0; i < m->natom; i++)
         for (int j = i + 1; j < m->natom; j++) {
@@ -45,6 +36,88 @@ void mol_h2_setup(Molecule *m, double bond_angstrom, int charge, int mult)
     m->enuc = enuc;
 }
 
+void mol_h2_setup(Molecule *m, double bond_angstrom, int charge, int mult)
+{
+    memset(m, 0, sizeof *m);
+    double r = 0.5 * bond_angstrom * QC_BOHR_PER_ANG;
+    m->natom = 2;
+    m->Z[0] = 1;
+    m->Z[1] = 1;
+    m->xyz[0][2] = -r;
+    m->xyz[1][2] = +r;
+    m->charge = charge;
+    m->mult = mult;
+    m->nelec = 2 - charge;
+    compute_enuc(m);
+}
+
+int mol_setup_by_name(Molecule *m, const char *name, double bond_angstrom)
+{
+    memset(m, 0, sizeof *m);
+    double r = bond_angstrom * QC_BOHR_PER_ANG;
+    if (strcmp(name, "H2") == 0 || strcmp(name, "h2") == 0) {
+        mol_h2_setup(m, bond_angstrom, 0, 1);
+        return 0;
+    }
+    if (strcmp(name, "HeH+") == 0 || strcmp(name, "heh+") == 0) {
+        m->natom = 2;
+        m->Z[0] = 2; m->Z[1] = 1;
+        m->xyz[0][2] = -0.5 * r;
+        m->xyz[1][2] = +0.5 * r;
+        m->charge = 1; m->mult = 1; m->nelec = 2;
+        compute_enuc(m);
+        return 0;
+    }
+    if (strcmp(name, "LiH") == 0 || strcmp(name, "lih") == 0) {
+        m->natom = 2;
+        m->Z[0] = 3; m->Z[1] = 1;
+        m->xyz[0][2] = -0.5 * r;
+        m->xyz[1][2] = +0.5 * r;
+        m->charge = 0; m->mult = 1; m->nelec = 4;
+        compute_enuc(m);
+        return 0;
+    }
+    if (strcmp(name, "BeH2") == 0 || strcmp(name, "beh2") == 0) {
+        m->natom = 3;
+        m->Z[0] = 4; m->Z[1] = 1; m->Z[2] = 1;
+        m->xyz[0][2] = 0.0;
+        m->xyz[1][2] = -r;
+        m->xyz[2][2] = +r;
+        m->charge = 0; m->mult = 1; m->nelec = 6;
+        compute_enuc(m);
+        return 0;
+    }
+    if (strcmp(name, "H4") == 0 || strcmp(name, "h4") == 0) {
+        /* Linear H4 chain with nearest-neighbour spacing bond_angstrom */
+        m->natom = 4;
+        for (int i = 0; i < 4; i++) {
+            m->Z[i] = 1;
+            m->xyz[i][2] = ((double)i - 1.5) * r;
+        }
+        m->charge = 0; m->mult = 1; m->nelec = 4;
+        compute_enuc(m);
+        return 0;
+    }
+    return -1;
+}
+
+const char *elem_symbol(int Z)
+{
+    switch (Z) {
+    case 1: return "H";
+    case 2: return "He";
+    case 3: return "Li";
+    case 4: return "Be";
+    case 5: return "B";
+    case 6: return "C";
+    case 7: return "N";
+    case 8: return "O";
+    case 9: return "F";
+    case 10: return "Ne";
+    default: return NULL;
+    }
+}
+
 /* ---- parsing of Basis Set Exchange NWChem format ---- */
 
 typedef struct {
@@ -54,9 +127,11 @@ typedef struct {
     double coef[QC_MAX_SHELL_PRIM];
 } ParsedShell;
 
-static int l_from_letter(char c)
+static int l_from_token(const char *tok)
 {
-    switch (c) {
+    if (strcmp(tok, "SP") == 0) return -10; /* special SP marker: col 0 = S, col 1 = P */
+    if (strlen(tok) != 1) return -1;
+    switch (tok[0]) {
     case 'S': return 0;
     case 'P': return 1;
     case 'D': return 2;
@@ -75,7 +150,6 @@ static int parse_nwchem_element(const char *text, const char *sym, ParsedShell *
     int in_block = 0;
     int cur_l = -1;
     int ncol = 0;
-    /* collect columns: for a block, column j is a list of (exp, coef) */
     static double colexp[16][QC_MAX_SHELL_PRIM];
     static double colcoef[16][QC_MAX_SHELL_PRIM];
     static int colnp[16];
@@ -99,15 +173,13 @@ static int parse_nwchem_element(const char *text, const char *sym, ParsedShell *
         if (strcmp(tok0, "END") == 0) break;
         if (strcmp(tok0, "BASIS") == 0) continue;
 
-        if (nt >= 2 && isalpha((unsigned char)tok0[0]) && strlen(tok1) == 1 && isalpha((unsigned char)tok1[0])) {
-            /* new shell block header: "H    S" */
-            /* flush previous block */
-            if (in_block && strcmp(tok0, sym) == 0) { /* same element, new l */ }
-            if (in_block && cur_l >= 0) {
+        if (nt >= 2 && isalpha((unsigned char)tok0[0]) && isalpha((unsigned char)tok1[0])) {
+            /* flush previous block if it belonged to our element */
+            if (in_block && (cur_l >= 0 || cur_l == -10)) {
                 for (int c = 0; c < ncol; c++) {
                     if (*nout >= maxout) return -1;
                     ParsedShell *ps = &out[(*nout)++];
-                    ps->l = cur_l;
+                    ps->l = (cur_l == -10) ? c : cur_l;
                     ps->nprim = 0;
                     for (int k = 0; k < colnp[c]; k++) {
                         if (colcoef[c][k] == 0.0) continue;
@@ -117,15 +189,12 @@ static int parse_nwchem_element(const char *text, const char *sym, ParsedShell *
                     }
                 }
             }
-            if (in_block && strcmp(tok0, sym) != 0) {
-                /* block of a different element: we are done with ours */
-            }
             in_block = (strcmp(tok0, sym) == 0);
-            cur_l = in_block ? l_from_letter(tok1[0]) : -1;
+            cur_l = in_block ? l_from_token(tok1) : -1;
             ncol = 0;
             nprim_seen = 0;
             memset(colnp, 0, sizeof colnp);
-            if (in_block && cur_l < 0) return -2;
+            if (in_block && cur_l < 0 && cur_l != -10) return -2;
             continue;
         }
 
@@ -138,7 +207,6 @@ static int parse_nwchem_element(const char *text, const char *sym, ParsedShell *
         if (endp == tk) continue;
         tk = endp;
         int col = 0;
-        int nc = 0;
         while (1) {
             while (*tk == ' ' || *tk == '\t') tk++;
             if (*tk == 0 || *tk == '\r' || *tk == '\n') break;
@@ -151,16 +219,15 @@ static int parse_nwchem_element(const char *text, const char *sym, ParsedShell *
             colcoef[col][colnp[col]] = cf;
             colnp[col]++;
             col++;
-            nc++;
         }
         nprim_seen++;
     }
     /* flush last block */
-    if (in_block && cur_l >= 0) {
+    if (in_block && (cur_l >= 0 || cur_l == -10)) {
         for (int c = 0; c < ncol; c++) {
             if (*nout >= maxout) return -1;
             ParsedShell *ps = &out[(*nout)++];
-            ps->l = cur_l;
+            ps->l = (cur_l == -10) ? c : cur_l;
             ps->nprim = 0;
             for (int k = 0; k < colnp[c]; k++) {
                 if (colcoef[c][k] == 0.0) continue;
@@ -184,24 +251,19 @@ int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, cons
     char *text = qc_read_file(nwchem_path, &len);
     if (!text) qc_die("cannot read basis file '%s'", nwchem_path);
 
-    /* Parse shells for every distinct element present (only H is needed here). */
-    ParsedShell *elem_shells = qc_calloc(MAX_SHELL_TOTAL, sizeof(ParsedShell));
-    int nel_shells = 0;
-    int ok = 0;
-    /* parse the element used by the molecule; only H is supported by this build */
+    /* Parse shells for each atom */
+    ParsedShell *atom_shells[QC_MAX_ATOM];
+    int natom_shells[QC_MAX_ATOM];
+    int nshell = 0;
     for (int a = 0; a < mol->natom; a++) {
-        if (mol->Z[a] != 1) qc_die("basis '%s': element Z=%d not available in this build (H only)", name, mol->Z[a]);
+        const char *sym = elem_symbol(mol->Z[a]);
+        if (!sym) qc_die("basis '%s': unsupported atomic number Z=%d", name, mol->Z[a]);
+        atom_shells[a] = qc_calloc(MAX_SHELL_TOTAL, sizeof(ParsedShell));
+        int ok = parse_nwchem_element(text, sym, atom_shells[a], MAX_SHELL_TOTAL, &natom_shells[a]);
+        if (ok != 0) qc_die("basis '%s': failed to parse %s shells (code %d)", nwchem_path, sym, ok);
+        nshell += natom_shells[a];
     }
-    ok = parse_nwchem_element(text, "H", elem_shells, MAX_SHELL_TOTAL, &nel_shells);
     free(text);
-    if (ok != 0) qc_die("basis '%s': failed to parse H shells (code %d)", nwchem_path, ok);
-
-    int nshell = nel_shells * mol->natom;
-    int nprim_total = 0;
-    for (int i = 0; i < nel_shells; i++) {
-        for (int a = 0; a < mol->natom; a++) nprim_total += elem_shells[i].nprim;
-    }
-    (void)nprim_total;
 
     /* count primitives for env allocation */
     int env_cap = PTR_ENV_OFFSET + 3 * mol->natom + 4 * nshell * QC_MAX_SHELL_PRIM + 16;
@@ -235,8 +297,8 @@ int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, cons
     int ish = 0;
     int ao = 0;
     for (int a = 0; a < mol->natom; a++) {
-        for (int s = 0; s < nel_shells; s++) {
-            const ParsedShell *ps = &elem_shells[s];
+        for (int s = 0; s < natom_shells[a]; s++) {
+            const ParsedShell *ps = &atom_shells[a][s];
             int *bas = bs->bas + 8 * ish;
             int l = ps->l;
             int np = ps->nprim;
@@ -244,7 +306,7 @@ int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, cons
             bas[1] = l;                 /* ANG_OF */
             bas[2] = np;                /* NPRIM_OF */
             bas[3] = 1;                 /* NCTR_OF */
-            bas[4] = 0;                 /* KAPPA_OF (spherical is set via cint function choice) */
+            bas[4] = 0;                 /* KAPPA_OF */
             bas[5] = nenv;              /* PTR_EXP */
             for (int k = 0; k < np; k++) bs->env[nenv + k] = ps->exp[k];
             nenv += np;
@@ -259,6 +321,7 @@ int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, cons
             ao += 2 * l + 1;
             ish++;
         }
+        free(atom_shells[a]);
     }
     bs->ao_loc[nshell] = ao;
     bs->nao = ao;
@@ -271,10 +334,7 @@ int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, cons
         double *buf = qc_calloc((size_t)nc * nc, sizeof(double));
         int shls[2] = {i, i};
         int dims[2] = {nc, nc};
-        int c = 0;
-        (void)c;
-        int ret = int1e_ovlp_sph(buf, dims, shls, bs->atm, bs->natm, bs->bas, bs->nbas, bs->env, NULL, NULL);
-        (void)ret;
+        (void)int1e_ovlp_sph(buf, dims, shls, bs->atm, bs->natm, bs->bas, bs->nbas, bs->env, NULL, NULL);
         double sii = buf[0];
         if (!(sii > 0.0)) qc_die("basis: non-positive self-overlap on shell %d", i);
         double f = 1.0 / sqrt(sii);
@@ -284,7 +344,6 @@ int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, cons
         free(buf);
     }
 
-    free(elem_shells);
     return 0;
 }
 

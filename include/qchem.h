@@ -10,9 +10,9 @@
 #include <stdio.h>
 #include <complex.h>
 
-#define QC_MAX_ATOM 4
+#define QC_MAX_ATOM 8
 #define QC_MAX_SHELL_PRIM 64
-#define QC_MAX_QUBIT_SV 12          /* statevector simulator limit */
+#define QC_MAX_QUBIT_SV 20          /* statevector simulator limit (up to 20 qubits = 1M amplitudes) */
 #define QC_BOHR_PER_ANG 1.8897261246257702  /* CODATA 2018 */
 #define QC_VERSION "0.1.0"
 #define QC_PI 3.14159265358979323846
@@ -65,6 +65,8 @@ typedef struct {
 } BasisSet;
 
 void mol_h2_setup(Molecule *m, double bond_angstrom, int charge, int mult);
+int mol_setup_by_name(Molecule *m, const char *name, double bond_angstrom);
+const char *elem_symbol(int Z);
 int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, const char *name);
 void basis_free(BasisSet *bs);
 
@@ -248,12 +250,13 @@ void uccsd_free(UCCSD *u);
 void uccsd_prepare(const UCCSD *u, const double *theta, StateVec *sv);   /* from HF */
 void uccsd_circuit(const UCCSD *u, const double *theta, Circuit *c);       /* logical IR */
 
-/* ---------- VQE (src/vqe/vqe.c) ---------- */
+/* ---------- VQE & ADAPT-VQE (src/vqe/vqe.c) ---------- */
 typedef struct {
     int maxeval;
     double init_step;
     double xtol_rel;
     int verbose;
+    int use_cobyla;    /* 0: L-BFGS with analytic adjoint gradients (default); 1: COBYLA */
 } VQEOptions;
 
 typedef struct {
@@ -265,8 +268,24 @@ typedef struct {
     double seconds;
 } VQEResult;
 
+typedef struct {
+    int n_ops;
+    int *op_idx;
+    double *theta;
+    double energy;
+    double max_grad;
+    int nfev;
+    int converged;
+    double seconds;
+} AdaptResult;
+
 int vqe_optimize_local(const UCCSD *u, const PauliSum *ham, const VQEOptions *opt, VQEResult *r);
 double vqe_energy(const UCCSD *u, const PauliSum *ham, const double *theta, StateVec *scratch);
+double vqe_energy_grad(const UCCSD *u, const PauliSum *ham, const double *theta,
+                       double *grad, StateVec *psi, StateVec *lam);
+int adapt_vqe_optimize(const UCCSD *pool, const PauliSum *ham, int max_ops, double grad_tol,
+                       int verbose, AdaptResult *res, Circuit *circ_out);
+void adapt_result_free(AdaptResult *r);
 void vqe_result_free(VQEResult *r);
 
 /* ---------- FCI (src/fci/fci.c) ---------- */
@@ -412,6 +431,7 @@ int cmd_prepare(int argc, char **argv);
 int cmd_rhf(int argc, char **argv);
 int cmd_active_space(int argc, char **argv);
 int cmd_vqe(int argc, char **argv);
+int cmd_pes(int argc, char **argv);
 int cmd_hardware(int argc, char **argv);
 int cmd_job(int argc, char **argv);
 
