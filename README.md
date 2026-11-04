@@ -140,4 +140,15 @@ src/hw/                    IBM Quantum REST client, 1D path router, hardware CLI
 python/qchem_vqe/          Zero-dependency Python bridge (ctypes + CLI JSON wrapper)
 tests/                     5 automated test suites (chem, circuit, creds, experiment, ibm)
 data/basis/                NWChem basis sets (STO-3G, cc-pVDZ, cc-pVQZ)
+examples/                  End-to-end Python & FCIDUMP/PySCF interoperability scripts
+paper/                     Journal of Open Source Software (JOSS) manuscript (paper.md, paper.bib)
+docs/                      Ecosystem, grant, and journal submission guides
 ```
+
+---
+
+## Citation & Community
+
+- **Cite this software**: See [`CITATION.cff`](CITATION.cff) or the JOSS manuscript in [`paper/paper.md`](paper/paper.md).
+- **Contributing**: See [`CONTRIBUTING.md`](CONTRIBUTING.md) for code standards and sanitizer requirements.
+- **Ecosystem & Grant Submissions**: See [`docs/ECOSYSTEM_SUBMISSIONS.md`](docs/ECOSYSTEM_SUBMISSIONS.md) for Qiskit Ecosystem, Unitary Foundation, and JOSS submission details.

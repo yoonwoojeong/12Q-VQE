@@ -58,6 +58,38 @@ def find_library() -> ctypes.CDLL:
     raise FileNotFoundError("libqchem.so not found. Run `make all` or `sudo make install`.")
 
 
+def export_fcidump(
+    fcidump_out: str,
+    mol: str = "H2",
+    basis: str = "sto-3g",
+    electrons: int = 2,
+    orbitals: int = 2,
+    bond: float = 0.735,
+    xyz: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an active space from a named molecule or .xyz geometry and export a Molpro/PySCF FCIDUMP file."""
+    bin_path = find_binary()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cmd = [
+            bin_path, "active-space",
+            "--mol", mol,
+            "--basis", basis,
+            "--electrons", str(electrons),
+            "--orbitals", str(orbitals),
+            "--bond", str(bond),
+            "--fcidump-out", str(fcidump_out),
+            "--results", tmpdir,
+        ]
+        if xyz:
+            cmd.extend(["--xyz", str(xyz)])
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        json_files = list(Path(tmpdir).glob("active_CAS*.json"))
+        if not json_files:
+            raise RuntimeError("qchem-vqe did not produce an active-space JSON result file.")
+        return json.loads(json_files[0].read_text())
+
+
+
 def run_vqe(
     mol: str = "H2",
     basis: str = "cc-pVQZ",

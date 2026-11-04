@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+title: "12Q-VQE: Ab Initio C17 Quantum Chemistry, Adjoint VQE, and Sample-Based Quantum Diagonalization Engine"
+message: "If you use 12Q-VQE in your research or software, please cite it using the metadata from this file."
+type: software
+authors:
+  - given-names: Yoonwoo
+    family-names: Jeong
+    alias: yoonwoojeong
+repository-code: "https://github.com/yoonwoojeong/12Q-VQE"
+url: "https://github.com/yoonwoojeong/12Q-VQE"
+license: MIT
+version: 0.2.0
+date-released: "2026-04-11"
+keywords:
+  - quantum-chemistry
+  - variational-quantum-eigensolver
+  - sample-based-quantum-diagonalization
+  - hartree-fock
+  - uccsd
+  - adapt-vqe
+  - fcidump
+  - qiskit
+  - ibm-quantum
+  - c17
+abstract: >-
+  12Q-VQE (libqchem / qchem_vqe) is a standalone C17 and OpenMP/BLAS-accelerated
+  quantum chemistry and hybrid quantum-classical simulation engine. It implements
+  arbitrary Cartesian Gaussian basis integrals with Boys-function recurrence,
+  DIIS-accelerated Restricted Hartree-Fock (RHF), active-space MP2 natural orbital
+  selection, standard FCIDUMP and XYZ interoperability, Jordan-Wigner UCCSD,
+  reverse-mode analytical adjoint gradients with L-BFGS and ADAPT-VQE,
+  Sample-Based Quantum Diagonalization (SQD / QSCI) with self-consistent
+  configuration recovery, and direct OpenQASM 2.0 / IBM Quantum Runtime REST execution.
