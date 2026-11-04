@@ -1,227 +1,143 @@
-# qchem-vqe
+# qchem-vqe (`libqchem`)
 
-C17 implementation of a variational quantum eigensolver for H₂ (R = 0.735 Å) in the
-cc-pVQZ basis, using a CAS(2,6) active space (12 qubits), a libcint integral engine,
-an in-house 12-qubit statevector simulator, a UCCSD ansatz optimised with COBYLA
-(NLopt), and a direct IBM Quantum Compute Service REST client that submits
-Estimator V2 jobs with OpenQASM 3 circuits.
+**Native C17 Quantum Chemistry VQE, ADAPT-VQE, and Sample-Based Quantum Diagonalization (SQD) Engine with Direct IBM Quantum QPU Integration.**
 
-Nothing in this repository has been run on IBM hardware yet. See
-[Status](#status-and-limitations).
+`qchem-vqe` is a zero-Python, high-performance electronic structure and hybrid quantum-classical engine written in portable C17. It computes ab initio Gaussian atomic orbital integrals via [`libcint`](https://github.com/sunqm/libcint), solves full-basis Restricted Hartree-Fock (RHF) with Pulay DIIS, transforms active spaces (`CAS(N_e, N_o)`) with BLAS `dgemm`, maps second-quantized Hamiltonians via Jordan-Wigner, and solves active-space quantum chemistry via:
+- **Exact Determinant CAS-FCI** (OpenMP-parallelized Slater-Condon subspace solver)
+- **UCCSD & ADAPT-VQE** accelerated by **exact reverse-mode adjoint gradients** + **L-BFGS** (`>200x` faster than derivative-free COBYLA)
+- **Sample-Based Quantum Diagonalization (SQD / QSCI)** with **Self-Consistent Configuration Recovery (S-CORE)** for noise-resilient chemical accuracy on noisy quantum hardware
+- **Shallow Natural-Orbital Givens Compilation & 1D Path Routing** (`0 SWAPs`, native `rz, sx, x, cz` gates in OpenQASM 3.0)
+- **Direct IBM Quantum Compute Service REST Client** (`IBM-API-Version: 2026-04-15`, Estimator V2, multi-PUB controlled experiments, live calibration snapshots)
+- **Standard Ecosystem Interoperability** via **`FCIDUMP`** (PySCF, ORCA, Molpro, Psi4) and **`.xyz`** molecular geometry files, plus a zero-dependency Python wrapper (`qchem_vqe`).
 
-## Build
+---
 
-Requirements: GCC (C17), `liblapacke-dev`, `libopenblas-dev`, `libnlopt-dev`,
-`libcjson-dev`, `libcurl4-openssl-dev`, `zstd`, `unzip`, `curl`.
+## Key Capabilities & Benchmarks
+
+| System | Basis / Active Space | Qubits | Method | Circuit 2Q Gates | Wall Time | Error vs CAS-FCI ($\text{E}_\text{h}$) |
+| :--- | :--- | :---: | :--- | :---: | :---: | :---: |
+| $\text{H}_2$ ($0.735\text{ \AA}$) | `cc-pVQZ` `CAS(2,6)` | 12 | UCCSD + COBYLA | 2,400 `CX` | `48.80 s` | $6.98 \times 10^{-11}$ |
+| $\text{H}_2$ ($0.735\text{ \AA}$) | `cc-pVQZ` `CAS(2,6)` | 12 | **UCCSD + L-BFGS (Adjoint Grad)** | 2,400 `CX` | **`0.23 s`** | **$1.33 \times 10^{-15}$** |
+| $\text{H}_2$ ($0.735\text{ \AA}$) | `cc-pVQZ` `CAS(2,6)` | 12 | **ADAPT-VQE (9 ops) + L-BFGS** | **592 `CX`** | **`0.66 s`** | **$2.44 \times 10^{-15}$** |
+| $\text{H}_2$ ($0.735\text{ \AA}$) | `cc-pVQZ` `CAS(2,6)` | 12 | **Givens Natural-Orbital (`r=5`)** | **368 native `CZ` (`0 SWAP`)** | **`0.01 s`** | **$3.96 \times 10^{-6}$** |
+| $\text{H}_2$ ($0.735\text{ \AA}$) | `cc-pVQZ` `CAS(2,8)` | 16 | **16-Qubit CAS-FCI (1,241 Paulis)** | — | **`0.08 s`** | Exact ($-1.14944547\text{ E}_\text{h}$) |
+| $\text{LiH}$ ($1.595\text{ \AA}$) | `sto-3g` `CAS(2,5)` (frozen $1s$) | 10 | **ADAPT-VQE (10 ops) + L-BFGS** | **528 `CX`** | **`0.89 s`** | **$2.66 \times 10^{-14}$** |
+| $\text{H}_4$ ($1.000\text{ \AA}$) | `sto-3g` `CAS(4,4)` ($4e^-$) | 8 | **ADAPT-VQE (8 ops) + L-BFGS** | **400 `CX`** | **`0.40 s`** | **$3.10 \times 10^{-10}$** |
+| $\text{BeH}_2$ ($1.326\text{ \AA}$) | `sto-3g` `CAS(4,6)` ($4e^-$) | 12 | **ADAPT-VQE (18 / 92 ops)** | **992 `CX`** | **`2.92 s`** | **$2.68 \times 10^{-6}$** |
+
+### Noise Resilience: SQD / QSCI vs Raw Estimator
+Under `3.0%` per-qubit depolarizing/readout bit-flip noise (where `>25%` of all shots leak out of the particle-number sector and raw Pauli `Estimator` expectations lose `>0.16 Eh`):
+- **$\text{H}_2$ `CAS(2,6)` (12 qubits, 4,096 shots)**: Raw noisy Estimator error is **$+0.165198\text{ E}_\text{h}$**; **SQD with S-CORE** recovers **$-1.148902977328\text{ E}_\text{h}$** (error **$2.22 \times 10^{-16}\text{ E}_\text{h}$**, using 22 / 66 determinants in `94 ms`).
+- **$\text{LiH}$ `CAS(2,5)` (`FCIDUMP`, 10 qubits, 4,096 shots)**: Raw noisy Estimator error is **$+0.085043\text{ E}_\text{h}$**; **SQD with S-CORE** recovers **$-7.554736489187\text{ E}_\text{h}$** (error **$8.88 \times 10^{-16}\text{ E}_\text{h}$**, using 16 / 45 determinants in `63 ms`).
+
+---
+
+## Installation & Deployment
+
+### Option 1: Build from Source (Linux / WSL Ubuntu)
+Requirements: GCC or Clang (C17 + OpenMP), `liblapacke-dev`, `libopenblas-dev`, `libnlopt-dev`, `libcjson-dev`, `libcurl4-openssl-dev`, `zstd`, `unzip`, `curl`.
 
 ```bash
-make fetch-libcint   # libcint 6.1.3 from conda-forge into third_party/libcint (not packaged by Ubuntu)
-make                 # builds build/qchem-vqe
-make test            # scientific validation tests
+make fetch-libcint          # downloads libcint 6.1.3 from conda-forge into third_party/libcint
+make -j4                    # builds build/qchem-vqe, build/libqchem.a, and build/libqchem.so
+make test                   # runs all 5 scientific & hardware validation suites
+make sanitize               # runs full suite under AddressSanitizer + UndefinedBehaviorSanitizer + LeakSanitizer
+sudo make install           # installs to /usr/local (bin, lib, include, share/qchem-vqe, pkg-config qchem.pc)
 ```
 
-## Windows (PowerShell)
+### Option 2: Portable Binary Release Tarball
+Download `qchem-vqe-linux-x86_64.tar.gz` from [GitHub Releases](https://github.com/yoonwoojeong/12Q-VQE/releases) (or build it locally with `make dist`):
+```bash
+tar -xzf qchem-vqe-linux-x86_64.tar.gz
+./qchem-vqe/bin/qchem-vqe sqd --mol H2 --basis cc-pVQZ --shots 4096
+```
 
-The program uses POSIX APIs, so on Windows it runs inside WSL (Ubuntu). From the repository
-root in PowerShell:
+### Option 3: Docker / Apptainer Container
+```bash
+docker build -t qchem-vqe .
+docker run --rm qchem-vqe sqd --mol LiH --basis sto-3g --electrons 2 --orbitals 5
+```
 
+### Option 4: Python Bridge (`pip install`)
+```bash
+pip install -e .
+python3 -c "import qchem_vqe; print(qchem_vqe.run_sqd(mol='LiH', basis='sto-3g', electrons=2, orbitals=5))"
+```
+
+### Option 5: Windows (PowerShell via WSL)
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\quickstart-wsl.ps1
 ```
 
-The script checks for WSL and Ubuntu, then runs the Ubuntu quickstart inside WSL. If WSL is
-missing, run this once in an elevated PowerShell, reboot, then run the script again:
+---
 
-```powershell
-wsl --install -d Ubuntu
-```
-
-Afterwards, run the program inside WSL, for example
-`wsl --cd <repo path in WSL> -- ./build/qchem-vqe rhf`. Credentials stored with `auth login`
-live in the Linux home of the WSL distribution, not in Windows.
-
-## Controlled QPU experiment
-
-One config file, three commands:
+## Command-Line Interface
 
 ```bash
-./build/qchem-vqe experiment plan                 # dry run: builds every arm, picks backend and qubits, prints the plan
-./build/qchem-vqe experiment run                  # submits all arms as ONE Estimator job (type SUBMIT to confirm)
-./build/qchem-vqe experiment results JOB_ID       # per-arm energies and the controlled comparison
-```
+# 1. Integral preparation & full-basis RHF (built-in molecules: H2, HeH+, LiH, BeH2, H4, or custom --xyz FILE)
+./build/qchem-vqe prepare --mol LiH --basis sto-3g --bond 1.595
+./build/qchem-vqe rhf --mol H2 --basis cc-pVQZ --bond 0.735
+./build/qchem-vqe rhf --xyz my_molecule.xyz --charge 0 --mult 1 --basis cc-pVDZ
 
-The config is `experiments/h2_cas26.ini` (system, backend, ansatz, precision,
-resilience level, seed, arms); copy it to vary one setting at a time. All arms run in the
-same job, so they share the backend, physical qubits, calibration window, shots,
-mitigation and seed:
+# 2. Active-Space Hamiltonian, Validation, FCI, and FCIDUMP Export/Import
+./build/qchem-vqe active-space --mol H2 --basis cc-pVQZ --electrons 2 --orbitals 6
+./build/qchem-vqe active-space --mol LiH --basis sto-3g --electrons 2 --orbitals 5 --fcidump-out lih.fcidump
+./build/qchem-vqe active-space --fcidump lih.fcidump
 
-| Arm | Circuit | Exact energy | Role |
-|---|---|---|---|
-| `bare_hf` | X gates only | E_HF | readout-only control |
-| `matched_hf` | the `vqe` circuit with every rotation angle 0 | E_HF | same gates and noise as `vqe`: noise control |
-| `vqe` | Givens circuit preparing the optimised VQE state | noiseless circuit energy | treatment |
+# 3. Local VQE: L-BFGS with Reverse-Mode Adjoint Gradients (default) or ADAPT-VQE
+./build/qchem-vqe vqe --mode local --mol H2 --basis cc-pVQZ --electrons 2 --orbitals 6
+./build/qchem-vqe vqe --mode local --mol BeH2 --basis sto-3g --electrons 4 --orbitals 6 --ansatz adapt
 
-`experiment results` reports QPU − exact for each arm, the correlation energy measured
-on the chip as E(vqe) − E(matched_hf), and a control-corrected VQE energy
-E_HF + [E(vqe) − E(matched_hf)]_QPU. The correction assumes that the treatment and its
-angle-zero control carry the same noise bias. `experiment plan --calibration CONF.json PROPS.json`
-plans offline from saved backend files without credentials. Plans, records and results are
-written to `results/experiments/`.
+# 4. Sample-Based Quantum Diagonalization (SQD / QSCI) with Configuration Recovery
+./build/qchem-vqe sqd --mol H2 --basis cc-pVQZ --electrons 2 --orbitals 6 --shots 4096 --noise 0.03
+./build/qchem-vqe sqd --fcidump lih.fcidump --shots 4096 --noise 0.03 --sc-iters 4
 
-## Commands
+# 5. Potential Energy Surface (PES) Dissociation Curve Scans
+./build/qchem-vqe pes --mol H2 --basis cc-pVDZ --electrons 2 --orbitals 4 --rmin 0.5 --rmax 2.5 --npts 9
+./build/qchem-vqe pes --mol LiH --basis sto-3g --electrons 2 --orbitals 5 --rmin 1.0 --rmax 2.8 --npts 7
 
-```bash
-./build/qchem-vqe prepare --basis cc-pVQZ          # libcint AO integrals, normalisation checks
-./build/qchem-vqe rhf                              # RHF in the full cc-pVQZ basis (60 AO)
-./build/qchem-vqe active-space --electrons 2 --orbitals 6 [--first N]
-./build/qchem-vqe vqe --mode local [--maxeval N]   # UCCSD + COBYLA on the statevector simulator
+# 6. IBM Quantum Hardware Inspection, Preflight, Submission & Controlled Experiments
+./build/qchem-vqe auth login                                  # hidden prompt for IBM Cloud API key & CRN
 ./build/qchem-vqe hardware list
-./build/qchem-vqe hardware inspect                 # backend selection, calibration summary, layout
-./build/qchem-vqe hardware preflight               # routed circuit cost on the chosen layout
-./build/qchem-vqe vqe --mode hardware              # dry run: builds and prints the plan
-./build/qchem-vqe vqe --mode hardware --submit     # asks you to type SUBMIT; --yes skips the prompt
+./build/qchem-vqe hardware preflight --backend ibm_fez
+./build/qchem-vqe vqe --mode hardware --backend ibm_fez --submit
 ./build/qchem-vqe job status JOB_ID
 ./build/qchem-vqe job results JOB_ID
+./build/qchem-vqe experiment plan experiments/h2_cas26.ini
+./build/qchem-vqe experiment run experiments/h2_cas26.ini
+./build/qchem-vqe experiment results JOB_ID
 ```
 
-Results are written to `results/` (JSON with metadata: version, git revision, UTC time).
-Hardware submissions are recorded in `results/hardware/`, including every observable
-and its coefficient, so the job can be evaluated later without recomputation.
+---
 
-### Credentials
+## Live IBM Quantum Hardware Record (`ibm_fez`)
 
-Enter them once from the CLI:
+A live 12-qubit Estimator V2 job (`dblcn1pkbkrc73cnfv4g`) was executed on the 156-qubit **`ibm_fez`** Heron processor using the truncated natural-orbital Givens circuit (`r = 5` pairs, 327 Pauli observables):
+- **Physical 1D path**: `[1, 2, 3, 16, 23, 24, 25, 37, 45, 44, 43, 56]`
+- **Compiled circuit**: `1,250` native gates, **`368` native `CZ` gates**, **`0` routing SWAPs**, critical-path duration **`30.0 us`** (vs worst-case $T_2 = 61\text{ }\mu\text{s}$ on the layout)
+- **Artifacts**: [`results/hardware/dblcn1pkbkrc73cnfv4g.json`](results/hardware/dblcn1pkbkrc73cnfv4g.json), [`results/hardware/dblcn1pkbkrc73cnfv4g.qasm`](results/hardware/dblcn1pkbkrc73cnfv4g.qasm), and [`results/hardware/dblcn1pkbkrc73cnfv4g_results.json`](results/hardware/dblcn1pkbkrc73cnfv4g_results.json).
+- Because unmitigated 368-`CZ` expectation values suffer exponential Pauli damping across 327 terms, this hardware benchmark directly motivates the **controlled angle-zero noise subtraction (`experiment`)** and **Sample-Based Quantum Diagonalization (`sqd`)** workflows built into `qchem-vqe`.
 
-```bash
-./build/qchem-vqe auth login          # hidden prompt for the API key, then the instance CRN
-./build/qchem-vqe auth status         # where credentials come from; the key is masked
-./build/qchem-vqe auth logout         # delete the stored file
-```
+---
 
-Non-interactive use: `printf '%s' "$KEY" | ./build/qchem-vqe auth login --api-key-stdin --crn CRN`.
-The API key is never accepted as a command-line argument. `auth login` checks the key
-with IBM Cloud IAM before saving; `--no-verify` skips that check.
+## Architecture & Repository Layout
 
-Stored at `$QCHEM_VQE_CREDENTIALS`, or `$XDG_CONFIG_HOME/qchem-vqe/ibm_credentials`,
-or `~/.config/qchem-vqe/ibm_credentials` (directory `0700`, file `0600`). Plaintext on
-disk, so protect that file like any other secret. Environment variables override it:
-
-- `IBM_QUANTUM_API_KEY` — IBM Cloud API key (exchanged for an IAM bearer token)
-- `IBM_QUANTUM_CRN` — Quantum instance CRN (`Service-CRN` header)
-- `IBM_QUANTUM_API_URL` — optional, default `https://quantum.cloud.ibm.com/api/v1`
-  (use `https://eu-de.quantum.cloud.ibm.com/api/v1` for the EU region)
-- `IBM_QUANTUM_API_VERSION` — optional, default `2026-04-15`
-
-## Results so far (local, no hardware)
-
-| Quantity | Value (Eh) | Reference |
-|---|---|---|
-| Nuclear repulsion | 0.719968994426 | 1/R |
-| RHF, full cc-pVQZ (60 AO) | −1.133493458998 | PySCF 2.14 RHF: −1.133493458998 |
-| CAS(2,6) FCI (determinant, 66 dets) | −1.148902977328 | PySCF CASCI: −1.148902977365 |
-| CAS(2,6) VQE, UCCSD (35 params), local | −1.148902977328 | equals FCI to 4×10⁻¹⁴ |
-| CAS(2,3) FCI | −1.135444416491 | PySCF CASCI: −1.135444416507 |
-
-The CAS(2,6) energy is an active-space quantity; the full cc-pVQZ treatment is the
-RHF row. Both are reported separately in every output file.
-
-## Method
-
-- **Integrals**: libcint 6.1.3 spherical one- and two-electron integrals; cc-pVQZ for H
-  from Basis Set Exchange (`data/basis/cc-pVQZ.nw`, `[4s3p2d1f]`, 30 functions per H).
-  Each contracted shell is renormalised against libcint's own overlap.
-- **RHF**: Löwdin orthogonalisation, LAPACKE `dsyev`, BLAS `dgemm`, Pulay DIIS.
-- **Active space**: MO window `[first, first+norb)`; doubly occupied orbitals below the
-  window fold into E_core and an effective one-body operator. Only closed-shell active
-  spaces are supported.
-- **Hamiltonian**: second-quantised H in spin orbitals (qubit `2p` = α, `2p+1` = β),
-  mapped with Jordan–Wigner. Pauli strings are stored as `(x,z)` bitmasks.
-- **Validation** (`fermion_validate`): integral symmetry, Hermitian Pauli coefficients,
-  `‖[H,N]ψ‖` on random states, Hermiticity via random vectors, HF expectation equal to
-  RHF.
-- **FCI**: Fock-space determinant Hamiltonian with explicit sign rules (independent of
-  the Jordan–Wigner mapping), diagonalised with `dsyev`. The JW Pauli Hamiltonian
-  restricted to the N = 2 sector must reproduce it.
-- **UCCSD**: spin-conserving singles and doubles (10 + 25 = 35 for CAS(2,6)). Each
-  generator `T − T†` is written as Pauli strings and applied as first-order Trotter
-  rotations `exp(iθ d P)`. This is exact at θ = 0 and exact for commuting strings; for
-  this system it reaches FCI, but the Trotter error is not separately bounded.
-- **Optimiser**: NLopt `NLOPT_LN_COBYLA` from θ = 0.
-- **Circuits**: logical IR → OpenQASM 3 (`h, sdg, s, x, rz, cx`). Each Pauli rotation uses
-  a nearest-neighbour CX chain over its support. Native compilation to `rz, sx, x, cz`
-  (CX = H·CZ·H, H = RZ(π/2)·SX·RZ(π/2)). Routing inserts SWAPs (3 CX) along shortest
-  paths only where two-qubit gates are not on a coupler.
-- **Hardware circuit** (default `--ansatz givens`): the optimised UCCSD state is rewritten
-  in natural orbitals (SVD of its one-α/one-β coefficient matrix) and prepared with a
-  chain of pair rotations plus adjacent Givens orbital rotations. Every gate acts on
-  3–4 consecutive qubits. Pairs whose weight falls below `--givens-trunc` (default
-  10⁻⁴) are dropped; the circuit is checked on the simulator and refused below 0.999
-  fidelity. For CAS(2,6): 432 CX instead of 2,400, fidelity 0.9999977, noiseless energy
-  4×10⁻⁶ Eh above the VQE optimum. `--ansatz uccsd` submits the UCCSD circuit instead.
-- **Backend selection**: online QPUs with ≥ 12 qubits and `cz` in their basis. The layout
-  is a simple path of 12 physical qubits found by search, scored by readout error, CZ
-  error and a 10 µs/T1 + 10 µs/T2 idling penalty (a connected cluster is the fallback).
-  The candidate with the lowest score is used unless `--backend` is given.
-- **Hardware job**: Estimator V2, `program_id = "estimator"`, `version = 2`,
-  `resilience_level = 1`, `default_precision` (default 0.02), observables as Pauli
-  strings over the physical register (Qiskit label order, qubit 0 rightmost). The
-  energy is Σ cᵢ⟨Pᵢ⟩ with σ = √(Σ cᵢ² σᵢ²), which ignores covariances between terms.
-
-## Verification
-
-`make test` runs:
-
-- `test_chem`: basis normalisation and symmetry, ERI permutational symmetry, RHF and
-  CAS(2,6) FCI against PySCF reference values, Hamiltonian validation, JW vs
-  determinant FCI.
-- `test_circuit`: Pauli rotations vs gate IR vs native decomposition; UCCSD counts,
-  θ = 0 gives HF, 20 random states ≥ FCI, gate circuit == direct preparation,
-  native circuit == IR.
-- `test_ibm`: calibration parsing, layout selection avoids a noisy qubit, every native
-  CZ on a coupler, and the routed 12-qubit state equals the logical state up to the
-  final permutation. These tests use **synthetic in-memory devices**, not IBM data.
-
-The PySCF numbers come from a scratch environment outside this repository. They are
-hard-coded as reference values only.
-
-## Status and limitations
-
-- **No hardware results.** No `IBM_QUANTUM_API_KEY` or CRN was available, so no QPU job
-  was submitted, and no hardware energy, uncertainty, or job ID exists. The REST calls
-  follow the 2026-04-15 OpenAPI schema and the documented Estimator example, but they
-  have not been exercised against the live service.
-- **Hardware circuit cost.** On snapshots of real Heron backends (ibm_fez, ibm_marrakesh,
-  ibm_kingston, ibm_torino, from qiskit-ibm-runtime), the default Givens circuit needs
-  432 CZ, no SWAPs, and about 40 µs per shot, against worst-case T2 of 78–132 µs on the
-  chosen paths. The heuristic success probability (product of 1 − error) is 0.1–0.35, so
-  noise still biases the energy, and `resilience_level = 1` only mitigates readout. The
-  UCCSD circuit (`--ansatz uccsd`) needs about 2,400 CZ even with these layouts.
-  `hardware preflight` and the hardware plan print these estimates before any submission.
-- **Only CZ-basis backends** are supported. ECR-only devices are rejected.
-- **Statevector limit**: 12 qubits, so only CAS(2,k) with k ≤ 6 can be validated
-  locally.
-- **Two-electron active spaces only for the UCCSD path.** FCI and the Hamiltonian are
-  general in the electron count, but this build only exercises CAS(2,k).
-- **Scope**: H₂ at a single geometry. No dissociation curve, no noise model, no
-  error mitigation beyond the Estimator's `resilience_level = 1`.
-
-## Layout
-
-```
-include/qchem.h          shared interfaces
-src/common/              utilities, JSON results and metadata
-src/basis/               molecule, NWChem basis parser, libcint environment
-src/integrals/           S, T, V, ERI via libcint
-src/scf/rhf.c            RHF (LAPACK + BLAS + DIIS)
-src/active/active.c      AO→MO transform, active space, E_core
-src/fermion/             Pauli algebra and Jordan–Wigner Hamiltonian
-src/sim/statevec.c       12-qubit statevector simulator
-src/qasm/circuit.c       circuit IR, Pauli compilation, native gates, OpenQASM 3
-src/vqe/                 UCCSD ansatz and COBYLA driver
-src/fci/fci.c            determinant FCI reference
-src/hw/                  IBM REST client, calibration, layout/routing, hardware CLI
-src/main.c               CLI
-tests/                   scientific validation programs
-scripts/fetch_libcint.sh libcint from conda-forge
-data/basis/cc-pVQZ.nw    basis set (Basis Set Exchange)
+```text
+include/qchem.h            Public C17 library API (libqchem)
+src/common/                Memory-safe helpers, dynamic path resolution, JSON metadata
+src/basis/                 Multi-element molecules, .xyz loader, NWChem S/P/D/F/G + SP parser
+src/integrals/             Spherical 1e/2e AO integrals via libcint
+src/scf/rhf.c              Full-basis RHF solver (Löwdin orthogonalization + Pulay DIIS)
+src/active/active.c        BLAS dgemm AO->MO integral transform, frozen core, FCIDUMP I/O
+src/fermion/               Bitmask Pauli algebra and Jordan-Wigner Hamiltonian + validation
+src/sim/statevec.c         OpenMP 20-qubit statevector simulator and bit-twiddling Pauli kernels
+src/qasm/circuit.c         Logical IR, chain CNOT ladders, native rz/sx/x/cz compiler, OpenQASM 3.0
+src/vqe/uccsd.c            Spin-conserving UCCSD excitation pool
+src/vqe/vqe.c              Reverse-mode adjoint gradients, L-BFGS / COBYLA, and ADAPT-VQE
+src/vqe/givens.c           Two-electron SVD natural-orbital Givens circuit compiler
+src/fci/fci.c              Subspace Slater-Condon FCI solver and SQD / S-CORE recovery engine
+src/hw/                    IBM Quantum REST client, 1D path router, hardware CLI, controlled experiments
+python/qchem_vqe/          Zero-dependency Python bridge (ctypes + CLI JSON wrapper)
+tests/                     5 automated test suites (chem, circuit, creds, experiment, ibm)
+data/basis/                NWChem basis sets (STO-3G, cc-pVDZ, cc-pVQZ)
 ```

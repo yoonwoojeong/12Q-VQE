@@ -14,7 +14,7 @@
 #define QC_MAX_SHELL_PRIM 64
 #define QC_MAX_QUBIT_SV 20          /* statevector simulator limit (up to 20 qubits = 1M amplitudes) */
 #define QC_BOHR_PER_ANG 1.8897261246257702  /* CODATA 2018 */
-#define QC_VERSION "0.1.0"
+#define QC_VERSION "0.2.0"
 #define QC_PI 3.14159265358979323846
 
 /* ---------- common utilities (src/common/util.c) ---------- */
