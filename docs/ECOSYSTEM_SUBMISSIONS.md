@@ -1,46 +1,55 @@
-# Ecosystem, Grant, and Journal Submission Kit (`12Q-VQE v0.2.0`)
+# Ecosystem, Grant, and Journal Submission Kit (`qchem-vqe v0.2.0`)
 
-Because external funding portals and peer-review bots require your personal GitHub login, email address, and a **Public** repository visibility, all repository-side files (`ecosystem.json`, `CITATION.cff`, `CONTRIBUTING.md`, `paper/paper.md`, `paper/paper.bib`, and `examples/pyscf_interop_demo.py`) are already committed and tested in this repository.
+Because external funding portals and peer-review bots require your personal GitHub login, email address, and a **Public** repository visibility, all repository-side files (`ecosystem.json`, `CITATION.cff`, `CONTRIBUTING.md`, `paper/paper.md`, `paper/paper.bib`, `examples/pyscf_interop_demo.py`, and `scripts/submit_ecosystem.ps1`) are already committed and tested in this repository.
 
-Below are the exact **step-by-step instructions and copy-pasteable payloads** to submit `12Q-VQE` to all four major quantum open-source ecosystems.
-
----
-
-## Step 0: Prerequisite (Make Repository Public & Push `v0.2.0`)
-
-Before submitting to any external bot or reviewer:
-1. Push your latest commits and tag from PowerShell:
-   ```powershell
-   cd C:\Users\sshs4\12Q-VQE
-   git push origin main --force-with-lease
-   git push origin v0.2.0 --force
-   ```
-2. On GitHub (`https://github.com/yoonwoojeong/12Q-VQE/settings`), scroll down to **Danger Zone -> Change repository visibility -> Make public** (if it is still Private). External CI bots (`editorialbot` for JOSS and the Qiskit Ecosystem GitHub Action) must be able to clone the repository without authentication.
+Below are the exact **step-by-step instructions and copy-pasteable payloads** to submit `qchem-vqe` to all four major quantum open-source ecosystems.
 
 ---
 
-## 1. Qiskit Ecosystem Submission (Official IBM Quantum Directory)
+## Step 0: One-Command Automated Push + Qiskit Ecosystem Submission (PowerShell)
 
-The repository already contains [`ecosystem.json`](../ecosystem.json) at the root.
+Run the automated PowerShell script [`scripts/submit_ecosystem.ps1`](../scripts/submit_ecosystem.ps1) directly from your host PowerShell window:
+
+```powershell
+cd C:\Users\sshs4\12Q-VQE
+powershell -ExecutionPolicy Bypass -File scripts\submit_ecosystem.ps1
+```
+
+This single script automatically:
+1. Pushes `main` and `v0.2.0` to `https://github.com/yoonwoojeong/qchem-vqe`.
+2. Sets your GitHub repository description and adds the `qiskit` repository topic (required by Qiskit Ecosystem automated validation checks `[G14]` and `[G15]`).
+3. Submits the formatted `[Submission]: qchem-vqe` issue directly to `Qiskit/ecosystem` and prints the live issue URL.
+
+---
+
+## 1. Qiskit Ecosystem Submission (Manual Fallback Link)
+
+If you prefer to submit via browser instead of the PowerShell script:
 
 - **Submission Portal (1-Click Issue Form)**:
-  https://github.com/Qiskit/ecosystem/issues/new?template=submission.yml&title=%5BSubmission%5D+12Q-VQE
+  https://github.com/Qiskit/ecosystem/issues/new?template=01_submission.yml&title=%5BSubmission%5D%3A+qchem-vqe
 
 ### Copy-Paste Fields for the GitHub Issue Form:
 - **Project Name**:
-  `12Q-VQE`
-- **Project Watchers / Stars / Repository URL**:
-  `https://github.com/yoonwoojeong/12Q-VQE`
-- **Project Description**:
-  `High-performance C17 ab initio quantum chemistry engine (RHF, FCIDUMP, adjoint L-BFGS/ADAPT-VQE, Sample-Based Quantum Diagonalization, and Givens hardware compilation) with Python ctypes bindings and native OpenQASM 2.0 / IBM Quantum Estimator V2 integration.`
-- **License**:
-  `MIT License`
-- **Contact Information**:
+  `qchem-vqe`
+- **Description** *(must be under 135 characters)*:
+  `C17 quantum chemistry engine (RHF, FCIDUMP, adjoint VQE, SQD) with OpenQASM 3 and IBM Quantum Estimator V2 support.`
+- **Contact email**:
   *(Enter your preferred email address)*
-- **Categories / Labels**:
-  `Applications`, `Chemistry`, `Circuit simulator`, `Converter`
-- **Website / Documentation URL**:
-  `https://github.com/yoonwoojeong/12Q-VQE#readme`
+- **Category**:
+  `Application`
+- **Labels**:
+  `chemistry`, `Hamiltonian simulation`, `openqasm`, `circuit optimization`, `HPC`
+- **Interface/API**:
+  `Python`, `C`, `Command-line interface (CLI)`
+- **Stability and support expectations**:
+  `production-ready`
+- **GitHub repository**:
+  `https://github.com/yoonwoojeong/qchem-vqe`
+- **Packages**:
+  `https://github.com/yoonwoojeong/qchem-vqe/blob/main/pyproject.toml`
+- **Reference paper**:
+  `https://github.com/yoonwoojeong/qchem-vqe/blob/main/paper/paper.md`
 
 ---
 
