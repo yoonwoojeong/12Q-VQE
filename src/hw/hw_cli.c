@@ -380,9 +380,10 @@ static int cmd_job_results(const HwOpts *o)
     cJSON *st = state ? cJSON_GetObjectItem(state, "status") : NULL;
     const char *status = cJSON_IsString(st) ? st->valuestring : "unknown";
     printf("job %s status: %s\n", o->job_id, status);
+    int completed = (strcmp(status, "Completed") == 0);
     cJSON_Delete(j);
     free(js);
-    if (strcmp(status, "Completed") != 0) {
+    if (!completed) {
         printf("  results are available only for a Completed job\n");
         return 0;
     }
@@ -401,17 +402,40 @@ static int cmd_job_results(const HwOpts *o)
     char *res = NULL;
     if (ibm_job_results(&s, o->job_id, &res) != 0) qc_die("cannot read results of %s", o->job_id);
     cJSON *rj = cJSON_Parse(res);
-    free(res);
     cJSON *data = cJSON_GetObjectItem(rj, "data");
     cJSON *item = cJSON_IsArray(data) ? cJSON_GetArrayItem(data, 0) : NULL;
+    if (!item && cJSON_IsArray(rj)) item = cJSON_GetArrayItem(rj, 0);
     cJSON *results = item ? cJSON_GetObjectItem(item, "results") : NULL;
+    if (!results && item) results = cJSON_GetObjectItem(item, "data");
+    if (!results) results = cJSON_GetObjectItem(rj, "results");
+    if (cJSON_IsArray(results)) results = cJSON_GetArrayItem(results, 0);
+    if (results && cJSON_GetObjectItem(results, "data")) results = cJSON_GetObjectItem(results, "data");
     cJSON *evs = results ? cJSON_GetObjectItem(results, "evs") : NULL;
     cJSON *stds = results ? cJSON_GetObjectItem(results, "stds") : NULL;
-    if (!evs || !stds) qc_die("unexpected result layout (no evs/stds)");
+    if (!evs || !stds) {
+        fprintf(stderr, "raw results JSON: %.600s\n", res);
+        free(res);
+        qc_die("unexpected result layout (no evs/stds)");
+    }
+    free(res);
     double *ev = NULL, *sd = NULL;
     size_t nev = 0, nsd = 0;
-    base64_decode_f64(cJSON_GetObjectItem(evs, "data")->valuestring, &ev, &nev);
-    base64_decode_f64(cJSON_GetObjectItem(stds, "data")->valuestring, &sd, &nsd);
+    if (cJSON_IsArray(evs) && cJSON_IsArray(stds)) {
+        nev = (size_t)cJSON_GetArraySize(evs);
+        nsd = (size_t)cJSON_GetArraySize(stds);
+        ev = qc_calloc(nev ? nev : 1, sizeof(double));
+        sd = qc_calloc(nsd ? nsd : 1, sizeof(double));
+        int idx = 0;
+        for (cJSON *e = evs->child; e; e = e->next, idx++) ev[idx] = e->valuedouble;
+        idx = 0;
+        for (cJSON *e = stds->child; e; e = e->next, idx++) sd[idx] = e->valuedouble;
+    } else if (cJSON_IsObject(evs) && cJSON_GetObjectItem(evs, "data") &&
+               cJSON_IsObject(stds) && cJSON_GetObjectItem(stds, "data")) {
+        base64_decode_f64(cJSON_GetObjectItem(evs, "data")->valuestring, &ev, &nev);
+        base64_decode_f64(cJSON_GetObjectItem(stds, "data")->valuestring, &sd, &nsd);
+    } else {
+        qc_die("unexpected evs/stds format");
+    }
     if ((int)nev != nobs || (int)nsd != nobs) qc_die("result length %zu does not match %d observables", nev, nobs);
 
     double E = 0.0, var = 0.0;
