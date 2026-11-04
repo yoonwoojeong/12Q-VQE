@@ -101,21 +101,75 @@ int mol_setup_by_name(Molecule *m, const char *name, double bond_angstrom)
     return -1;
 }
 
+static const char *ELEM_SYMBOLS[] = {
+    NULL,
+    "H",  "He", "Li", "Be", "B",  "C",  "N",  "O",  "F",  "Ne",
+    "Na", "Mg", "Al", "Si", "P",  "S",  "Cl", "Ar", "K",  "Ca",
+    "Sc", "Ti", "V",  "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Ga", "Ge", "As", "Se", "Br", "Kr"
+};
+
 const char *elem_symbol(int Z)
 {
-    switch (Z) {
-    case 1: return "H";
-    case 2: return "He";
-    case 3: return "Li";
-    case 4: return "Be";
-    case 5: return "B";
-    case 6: return "C";
-    case 7: return "N";
-    case 8: return "O";
-    case 9: return "F";
-    case 10: return "Ne";
-    default: return NULL;
+    if (Z >= 1 && Z <= 36) return ELEM_SYMBOLS[Z];
+    return NULL;
+}
+
+int elem_z_from_symbol(const char *sym)
+{
+    if (!sym || !*sym) return -1;
+    char norm[4] = {0};
+    norm[0] = (char)toupper((unsigned char)sym[0]);
+    if (sym[1] && isalpha((unsigned char)sym[1])) norm[1] = (char)tolower((unsigned char)sym[1]);
+    for (int z = 1; z <= 36; z++) {
+        if (strcmp(norm, ELEM_SYMBOLS[z]) == 0) return z;
     }
+    int znum = atoi(sym);
+    if (znum >= 1 && znum <= 36) return znum;
+    return -1;
+}
+
+int mol_load_xyz(Molecule *m, const char *xyz_path, int charge, int mult)
+{
+    size_t len = 0;
+    char *txt = qc_read_file(xyz_path, &len);
+    if (!txt) return -1;
+    memset(m, 0, sizeof *m);
+    const char *p = txt;
+    /* line 1: natom */
+    const char *eol = strchr(p, '\n');
+    int nat = atoi(p);
+    if (nat <= 0 || nat > QC_MAX_ATOM || !eol) { free(txt); return -2; }
+    p = eol + 1;
+    /* line 2: comment (may optionally contain charge=<int> mult=<int>) */
+    eol = strchr(p, '\n');
+    if (!eol) { free(txt); return -3; }
+    p = eol + 1;
+
+    m->natom = nat;
+    int sum_z = 0;
+    for (int a = 0; a < nat; a++) {
+        while (*p == '\r' || *p == '\n') p++;
+        char sym[16] = {0};
+        double x = 0, y = 0, z = 0;
+        int nread = sscanf(p, "%15s %lf %lf %lf", sym, &x, &y, &z);
+        if (nread != 4) { free(txt); return -4; }
+        int Z = elem_z_from_symbol(sym);
+        if (Z <= 0) { free(txt); return -5; }
+        m->Z[a] = Z;
+        m->xyz[a][0] = x * QC_BOHR_PER_ANG;
+        m->xyz[a][1] = y * QC_BOHR_PER_ANG;
+        m->xyz[a][2] = z * QC_BOHR_PER_ANG;
+        sum_z += Z;
+        eol = strchr(p, '\n');
+        p = eol ? eol + 1 : p + strlen(p);
+    }
+    free(txt);
+    m->charge = charge;
+    m->mult = mult > 0 ? mult : 1;
+    m->nelec = sum_z - charge;
+    compute_enuc(m);
+    return 0;
 }
 
 /* ---- parsing of Basis Set Exchange NWChem format ---- */

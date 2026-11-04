@@ -221,6 +221,21 @@ int main(void)
     CHECK(rc == 0 && dn == 2 && fabs(dv[0] - 1.0) < 1e-15 && fabs(dv[1] - 2.5) < 1e-15, "base64 f64 decoding (1.0, 2.5)");
     free(dv);
 
+    /* Estimator V2 result parser: test both base64 payload and raw JSON array payload */
+    {
+        const char *json_b64 = "{\"data\":[{\"results\":{\"evs\":{\"data\":\"AAAAAAAA8D8AAAAAAAAEQA==\"},\"stds\":{\"data\":\"AAAAAAAA8D8AAAAAAAAEQA==\"}}}]}";
+        const char *json_arr = "{\"results\":[{\"data\":{\"evs\":[-0.85, 0.42, 0.11],\"stds\":[0.01, 0.02, 0.03]}}]}";
+        double *ev1 = NULL, *sd1 = NULL, *ev2 = NULL, *sd2 = NULL;
+        size_t n1 = 0, n2 = 0;
+        int r1 = ibm_parse_estimator_results_json(json_b64, &ev1, &sd1, &n1);
+        int r2 = ibm_parse_estimator_results_json(json_arr, &ev2, &sd2, &n2);
+        CHECK(r1 == 0 && n1 == 2 && fabs(ev1[0] - 1.0) < 1e-15 && fabs(ev1[1] - 2.5) < 1e-15,
+              "Estimator V2 parser handles base64-encoded evs/stds");
+        CHECK(r2 == 0 && n2 == 3 && fabs(ev2[0] - (-0.85)) < 1e-15 && fabs(sd2[2] - 0.03) < 1e-15,
+              "Estimator V2 parser handles raw JSON array evs/stds");
+        free(ev1); free(sd1); free(ev2); free(sd2);
+    }
+
     printf("%s\n", g_fail ? "test_ibm: FAILED" : "test_ibm: passed");
     return g_fail ? 1 : 0;
 }

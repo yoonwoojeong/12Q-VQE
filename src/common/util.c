@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <limits.h>
 
 void qc_die(const char *fmt, ...)
 {
@@ -113,4 +115,75 @@ int qc_env_get(const char *name, char *buf, size_t buflen)
 void qc_print_banner(const char *what)
 {
     printf("== qchem-vqe %s : %s ==\n", QC_VERSION, what);
+}
+
+static int dir_exists(const char *p)
+{
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+const char *qc_root_dir(char *buf, size_t n)
+{
+    if (qc_env_get("QCHEM_ROOT_DIR", buf, n)) return buf;
+    char exe[1024] = {0};
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (len > 0) {
+        exe[len] = 0;
+        /* Walk up from executable path looking for data/basis */
+        for (int up = 0; up < 4; up++) {
+            char *slash = strrchr(exe, '/');
+            if (!slash) break;
+            *slash = 0;
+            char probe[1200];
+            snprintf(probe, sizeof probe, "%s/data/basis", exe);
+            if (dir_exists(probe)) {
+                snprintf(buf, n, "%s", exe);
+                return buf;
+            }
+        }
+    }
+#ifdef QC_DATA_DIR
+    {
+        char tmp[1024];
+        snprintf(tmp, sizeof tmp, "%s", QC_DATA_DIR);
+        char *slash = strrchr(tmp, '/');
+        if (slash && strcmp(slash, "/data") == 0) {
+            *slash = 0;
+            if (dir_exists(tmp)) {
+                snprintf(buf, n, "%s", tmp);
+                return buf;
+            }
+        }
+    }
+#endif
+    snprintf(buf, n, ".");
+    return buf;
+}
+
+const char *qc_data_dir(char *buf, size_t n)
+{
+    if (qc_env_get("QCHEM_DATA_DIR", buf, n)) return buf;
+    char root[900];
+    qc_root_dir(root, sizeof root);
+    snprintf(buf, n, "%s/data", root);
+    return buf;
+}
+
+const char *qc_cache_dir(char *buf, size_t n)
+{
+    if (qc_env_get("QCHEM_CACHE_DIR", buf, n)) return buf;
+    char root[900];
+    qc_root_dir(root, sizeof root);
+    snprintf(buf, n, "%s/build/cache", root);
+    return buf;
+}
+
+const char *qc_results_dir(char *buf, size_t n)
+{
+    if (qc_env_get("QCHEM_RESULTS_DIR", buf, n)) return buf;
+    char root[900];
+    qc_root_dir(root, sizeof root);
+    snprintf(buf, n, "%s/results", root);
+    return buf;
 }

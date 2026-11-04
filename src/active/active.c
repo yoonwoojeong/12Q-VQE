@@ -153,3 +153,149 @@ void active_space_free(ActiveSpace *as)
     free(as->eps_act);
     memset(as, 0, sizeof *as);
 }
+
+int cas_system_load(CasSystem *cs, int nel, int norb, double bond)
+{
+    memset(cs, 0, sizeof *cs);
+    char ddir[512], pth[1024];
+    qc_data_dir(ddir, sizeof ddir);
+    snprintf(pth, sizeof pth, "%s/basis/cc-pVQZ.nw", ddir);
+    mol_h2_setup(&cs->mol, bond, 0, 1);
+    BasisSet bs;
+    basis_build(&bs, &cs->mol, pth, "cc-pVQZ");
+    AOInts ints;
+    char cdir[512], cache[1024];
+    qc_cache_dir(cdir, sizeof cdir);
+    qc_mkdir_p(cdir);
+    snprintf(cache, sizeof cache, "%s/ao_cc-pVQZ_H2_%.4f.bin", cdir, bond);
+    if (ao_integrals_read(&ints, cache, bs.nao) != 0) {
+        ao_integrals_compute(&ints, &bs, &cs->mol);
+        ao_integrals_write(&ints, cache, "cc-pVQZ");
+    }
+    rhf_run(&cs->rhf, &ints, &cs->mol, 200, 1e-10, 1e-8, 0);
+    int first = (cs->mol.nelec - nel) / 2;
+    active_space_build(&cs->as, &ints, &cs->rhf, &cs->mol, nel, norb, first);
+    fermion_build_hamiltonian(&cs->fh, &cs->as);
+    ao_integrals_free(&ints);
+    basis_free(&bs);
+    return 0;
+}
+
+void cas_system_free(CasSystem *cs)
+{
+    fermion_free(&cs->fh);
+    active_space_free(&cs->as);
+    rhf_free(&cs->rhf);
+    memset(cs, 0, sizeof *cs);
+}
+
+int fcidump_write(const ActiveSpace *as, const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    int n = as->nact;
+    fprintf(f, " &FCI NORB=%d,NELEC=%d,MS2=0,\n", n, as->nelec_act);
+    fprintf(f, "  ORBSYM=");
+    for (int i = 0; i < n; i++) fprintf(f, "1,");
+    fprintf(f, "\n  ISYM=1,\n &END\n");
+
+    double tol = 1e-15;
+    /* 2-electron integrals (p q | r s) with 1-based canonical indices p>=q, r>=s, pq>=rs */
+    for (int p = 0; p < n; p++)
+        for (int q = 0; q <= p; q++) {
+            int pq = p * (p + 1) / 2 + q;
+            for (int r = 0; r < n; r++)
+                for (int s = 0; s <= r; s++) {
+                    int rs = r * (r + 1) / 2 + s;
+                    if (pq < rs) continue;
+                    double v = as->g[(((size_t)p * n + q) * n + r) * n + s];
+                    if (fabs(v) > tol)
+                        fprintf(f, " %23.16e %3d %3d %3d %3d\n", v, p + 1, q + 1, r + 1, s + 1);
+                }
+        }
+    /* 1-electron integrals h_pq with p>=q */
+    for (int p = 0; p < n; p++)
+        for (int q = 0; q <= p; q++) {
+            double v = as->h[(size_t)p * n + q];
+            if (fabs(v) > tol)
+                fprintf(f, " %23.16e %3d %3d   0   0\n", v, p + 1, q + 1);
+        }
+    /* core energy */
+    fprintf(f, " %23.16e   0   0   0   0\n", as->ecore);
+    fclose(f);
+    return 0;
+}
+
+static int parse_int_after(const char *s, const char *key, int dflt)
+{
+    const char *p = strstr(s, key);
+    if (!p) return dflt;
+    p += strlen(key);
+    while (*p == ' ' || *p == '=') p++;
+    return atoi(p);
+}
+
+int fcidump_read(ActiveSpace *as, const char *path)
+{
+    size_t len = 0;
+    char *txt = qc_read_file(path, &len);
+    if (!txt) return -1;
+    memset(as, 0, sizeof *as);
+
+    /* Find header end (&END or / ) */
+    const char *body = strstr(txt, "&END");
+    if (body) body += 4;
+    else {
+        body = strstr(txt, "&end");
+        if (body) body += 4;
+        else {
+            const char *sl = strchr(txt, '/');
+            if (sl) body = sl + 1;
+        }
+    }
+    if (!body) { free(txt); return -2; }
+
+    int norb = parse_int_after(txt, "NORB", 0);
+    if (!norb) norb = parse_int_after(txt, "norb", 0);
+    int nelec = parse_int_after(txt, "NELEC", 0);
+    if (!nelec) nelec = parse_int_after(txt, "nelec", 0);
+    if (norb <= 0 || nelec < 0 || nelec > 2 * norb) { free(txt); return -3; }
+
+    as->nact = norb;
+    as->nao = norb;
+    as->nelec_act = nelec;
+    as->h = qc_calloc((size_t)norb * norb, sizeof(double));
+    as->g = qc_calloc((size_t)norb * norb * norb * norb, sizeof(double));
+
+    const char *p = body;
+    while (*p) {
+        while (*p == '\r' || *p == '\n' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        const char *eol = strchr(p, '\n');
+        double val = 0.0;
+        int i = 0, j = 0, k = 0, l = 0;
+        if (sscanf(p, "%lf %d %d %d %d", &val, &i, &j, &k, &l) == 5) {
+            if (i == 0 && j == 0 && k == 0 && l == 0) {
+                as->ecore = val;
+            } else if (k == 0 && l == 0 && i >= 1 && i <= norb && j >= 1 && j <= norb) {
+                int ii = i - 1, jj = j - 1;
+                as->h[(size_t)ii * norb + jj] = val;
+                as->h[(size_t)jj * norb + ii] = val;
+            } else if (i >= 1 && i <= norb && j >= 1 && j <= norb && k >= 1 && k <= norb && l >= 1 && l <= norb) {
+                int a = i - 1, b = j - 1, c = k - 1, d = l - 1;
+                /* 8-fold chemist symmetry (ab|cd) */
+                int perms[8][4] = {
+                    {a, b, c, d}, {b, a, c, d}, {a, b, d, c}, {b, a, d, c},
+                    {c, d, a, b}, {d, c, a, b}, {c, d, b, a}, {d, c, b, a}
+                };
+                for (int m = 0; m < 8; m++) {
+                    size_t idx = (((size_t)perms[m][0] * norb + perms[m][1]) * norb + perms[m][2]) * norb + perms[m][3];
+                    as->g[idx] = val;
+                }
+            }
+        }
+        p = eol ? eol + 1 : p + strlen(p);
+    }
+    free(txt);
+    return 0;
+}

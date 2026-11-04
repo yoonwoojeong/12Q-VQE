@@ -1,0 +1,20 @@
+{
+	"scope":	"Sample-Based Quantum Diagonalization (SQD) with configuration recovery",
+	"molecule":	"H2",
+	"basis":	"cc-pVQZ",
+	"active_electrons":	2,
+	"active_orbitals":	6,
+	"qubits":	12,
+	"shots":	4096,
+	"bitflip_prob":	0.03,
+	"sc_recovery_iters":	4,
+	"valid_sector_shots":	2919,
+	"recovered_shots":	1177,
+	"subspace_dim":	22,
+	"fci_dim":	66,
+	"rhf_Eh":	-1.1334934589979522,
+	"fci_Eh":	-1.1489029773276285,
+	"noisy_estimator_Eh":	-0.98370495364175348,
+	"sqd_energy_Eh":	-1.1489029773276287,
+	"sqd_minus_fci_Eh":	-2.2204460492503131e-16
+}

@@ -1,0 +1,27 @@
+{
+	"scope":	"CAS active space (not full basis)",
+	"molecule":	"LiH",
+	"basis":	"sto-3g",
+	"bond_angstrom":	0.735,
+	"active_electrons":	2,
+	"active_orbitals":	5,
+	"active_spin_orbitals":	10,
+	"first_mo":	1,
+	"inactive_doubly_occupied":	1,
+	"qubits":	10,
+	"pauli_terms":	276,
+	"rhf_full_basis_Eh":	-7.5368134926741472,
+	"active_space_hf_Eh":	-7.53681349267415,
+	"fci_cas_Eh":	-7.5547364891871878,
+	"fci_pauli_restricted_Eh":	-7.5547364891871815,
+	"validation_passed":	1,
+	"validation_comm_norm":	2.6802779948135416e-14,
+	"validation_herm_err":	1.13686837721616e-13,
+	"validation_hf_energy_err":	7.9936057773011271e-15,
+	"metadata":	{
+		"program":	"qchem-vqe",
+		"version":	"0.1.0",
+		"git_revision":	"34d9afb",
+		"timestamp_utc":	"2026-11-04T07:47:16Z"
+	}
+}

@@ -14,13 +14,17 @@
 #ifndef QC_DATA_DIR
 #define QC_DATA_DIR "data"
 #endif
-#define CACHE_DIR "/home/sshs4/.gemini/antigravity/scratch/12Q-VQE/build/cache"
-#define RESULTS_DIR "/home/sshs4/.gemini/antigravity/scratch/12Q-VQE/results"
 
 typedef struct {
     char mol[64];
     char basis[64];
+    char xyz_path[512];
+    char fcidump_in[512];
+    char fcidump_out[512];
     char results_dir[512];
+    char cache_dir[512];
+    int charge;
+    int mult;
     int electrons;      /* active electrons */
     int orbitals;       /* active spatial orbitals */
     int first;          /* first active MO, -1 = default */
@@ -33,6 +37,9 @@ typedef struct {
     double bond;        /* Angstrom */
     double rmin, rmax;  /* PES scan */
     int npts;
+    int shots;          /* SQD shots */
+    double noise;       /* SQD per-qubit bit-flip noise */
+    int sc_iters;       /* SQD self-consistent recovery iterations */
 } Opts;
 
 typedef struct {
@@ -50,7 +57,10 @@ static void opts_default(Opts *o)
     memset(o, 0, sizeof *o);
     snprintf(o->mol, sizeof o->mol, "H2");
     snprintf(o->basis, sizeof o->basis, "cc-pVQZ");
-    snprintf(o->results_dir, sizeof o->results_dir, "%s", RESULTS_DIR);
+    qc_results_dir(o->results_dir, sizeof o->results_dir);
+    qc_cache_dir(o->cache_dir, sizeof o->cache_dir);
+    o->charge = 0;
+    o->mult = 1;
     o->electrons = 2;
     o->orbitals = 6;
     o->first = -1;
@@ -63,6 +73,9 @@ static void opts_default(Opts *o)
     o->rmin = 0.4;
     o->rmax = 2.8;
     o->npts = 13;
+    o->shots = 4096;
+    o->noise = 0.02;
+    o->sc_iters = 4;
 }
 
 static const char *opt_value(int argc, char **argv, int *i, const char *name)
@@ -100,20 +113,30 @@ static void parse_opts(int argc, char **argv, Opts *o, int *consumed_flags)
         }
         else if ((v = opt_value(argc, argv, &i, "--adapt-max"))) o->adapt_max = atoi(v);
         else if ((v = opt_value(argc, argv, &i, "--adapt-tol"))) o->adapt_tol = atof(v);
+        else if ((v = opt_value(argc, argv, &i, "--xyz"))) snprintf(o->xyz_path, sizeof o->xyz_path, "%s", v);
+        else if ((v = opt_value(argc, argv, &i, "--charge"))) o->charge = atoi(v);
+        else if ((v = opt_value(argc, argv, &i, "--mult"))) o->mult = atoi(v);
+        else if ((v = opt_value(argc, argv, &i, "--fcidump"))) snprintf(o->fcidump_in, sizeof o->fcidump_in, "%s", v);
+        else if ((v = opt_value(argc, argv, &i, "--fcidump-out"))) snprintf(o->fcidump_out, sizeof o->fcidump_out, "%s", v);
+        else if ((v = opt_value(argc, argv, &i, "--shots"))) o->shots = atoi(v);
+        else if ((v = opt_value(argc, argv, &i, "--noise"))) o->noise = atof(v);
+        else if ((v = opt_value(argc, argv, &i, "--sc-iters"))) o->sc_iters = atoi(v);
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) o->verbose = 1;
     }
 }
 
 static const char *basis_path(const Opts *o, char *buf, size_t n)
 {
+    char ddir[512];
+    qc_data_dir(ddir, sizeof ddir);
     if (strcmp(o->basis, "sto-3g") == 0 || strcmp(o->basis, "STO-3G") == 0)
-        snprintf(buf, n, "%s/basis/sto-3g.nw", QC_DATA_DIR);
+        snprintf(buf, n, "%s/basis/sto-3g.nw", ddir);
     else if (strcmp(o->basis, "cc-pVDZ") == 0 || strcmp(o->basis, "cc-pvdz") == 0)
-        snprintf(buf, n, "%s/basis/cc-pVDZ.nw", QC_DATA_DIR);
+        snprintf(buf, n, "%s/basis/cc-pVDZ.nw", ddir);
     else if (strcmp(o->basis, "cc-pVQZ") == 0 || strcmp(o->basis, "cc-pvqz") == 0)
-        snprintf(buf, n, "%s/basis/cc-pVQZ.nw", QC_DATA_DIR);
+        snprintf(buf, n, "%s/basis/cc-pVQZ.nw", ddir);
     else
-        snprintf(buf, n, "%s/basis/%s.nw", QC_DATA_DIR, o->basis);
+        snprintf(buf, n, "%s/basis/%s.nw", ddir, o->basis);
     return buf;
 }
 
@@ -123,12 +146,22 @@ static void ensure_ints(Ctx *c, const Opts *o)
     char pth[1024];
     basis_path(o, pth, sizeof pth);
     memset(&c->mol, 0, sizeof c->mol);
+    if (o->xyz_path[0]) {
+        if (mol_load_xyz(&c->mol, o->xyz_path, o->charge, o->mult) != 0)
+            qc_die("cannot load XYZ geometry from '%s'", o->xyz_path);
+        basis_build(&c->bs, &c->mol, pth, o->basis);
+        double t0 = qc_wall_time();
+        ao_integrals_compute(&c->ints, &c->bs, &c->mol);
+        printf("  computed AO integrals from %s with libcint in %.2f s\n", o->xyz_path, qc_wall_time() - t0);
+        c->have_ints = 1;
+        return;
+    }
     if (mol_setup_by_name(&c->mol, o->mol, o->bond) != 0)
-        qc_die("unknown molecule '%s' (supported: H2, HeH+, LiH, BeH2, H4)", o->mol);
+        qc_die("unknown molecule '%s' (supported: H2, HeH+, LiH, BeH2, H4 or --xyz FILE)", o->mol);
     basis_build(&c->bs, &c->mol, pth, o->basis);
-    qc_mkdir_p(CACHE_DIR);
-    char cache[512];
-    snprintf(cache, sizeof cache, CACHE_DIR "/ao_%s_%s_%.4f.bin", o->basis, o->mol, o->bond);
+    qc_mkdir_p(o->cache_dir);
+    char cache[1024];
+    snprintf(cache, sizeof cache, "%s/ao_%s_%s_%.4f.bin", o->cache_dir, o->basis, o->mol, o->bond);
     if (ao_integrals_read(&c->ints, cache, c->bs.nao) != 0) {
         double t0 = qc_wall_time();
         ao_integrals_compute(&c->ints, &c->bs, &c->mol);
@@ -180,8 +213,16 @@ static void ensure_rhf(Ctx *c, const Opts *o)
 {
     ensure_ints(c, o);
     if (c->have_rhf) return;
-    char cache[512];
-    snprintf(cache, sizeof cache, CACHE_DIR "/rhf_%s_%s_%.4f.bin", o->basis, o->mol, o->bond);
+    if (o->xyz_path[0]) {
+        double t0 = qc_wall_time();
+        int conv = rhf_run(&c->rhf, &c->ints, &c->mol, 200, 1e-10, 1e-8, o->verbose);
+        printf("  RHF %s in %d iterations (%.2f s)\n", conv == 0 ? "converged" : "NOT converged",
+               c->rhf.iterations, qc_wall_time() - t0);
+        c->have_rhf = 1;
+        return;
+    }
+    char cache[1024];
+    snprintf(cache, sizeof cache, "%s/rhf_%s_%s_%.4f.bin", o->cache_dir, o->basis, o->mol, o->bond);
     if (load_rhf(&c->rhf, cache, c->ints.nao) == 0) {
         printf("  loaded RHF orbitals from %s\n", cache);
     } else {
@@ -201,42 +242,32 @@ static int default_first(const Opts *o, const Molecule *mol)
 }
 
 /* active space + Hamiltonian with validation; returns 0 on success */
-static int build_active(Ctx *c, const Opts *o)
+static int build_active(Ctx *c, Opts *o)
 {
+    if (o->fcidump_in[0]) {
+        if (fcidump_read(&c->as, o->fcidump_in) != 0)
+            qc_die("cannot read FCIDUMP file '%s'", o->fcidump_in);
+        o->electrons = c->as.nelec_act;
+        o->orbitals = c->as.nact;
+        c->rhf.energy = active_hf_energy(&c->as);
+        fermion_build_hamiltonian(&c->fh, &c->as);
+        if (o->fcidump_out[0]) fcidump_write(&c->as, o->fcidump_out);
+        return 0;
+    }
     ensure_rhf(c, o);
     int first = default_first(o, &c->mol);
     active_space_build(&c->as, &c->ints, &c->rhf, &c->mol, o->electrons, o->orbitals, first);
     fermion_build_hamiltonian(&c->fh, &c->as);
+    if (o->fcidump_out[0]) {
+        if (fcidump_write(&c->as, o->fcidump_out) == 0)
+            printf("  exported FCIDUMP to %s\n", o->fcidump_out);
+    }
     return 0;
 }
 
 static void print_rule(void) { printf("----------------------------------------------------------------\n"); }
 
 /* ---------------- commands ---------------- */
-
-int cas_system_load(CasSystem *cs, int nel, int norb, double bond)
-{
-    Opts o; opts_default(&o);
-    o.electrons = nel;
-    o.orbitals = norb;
-    o.bond = bond;
-    Ctx c; memset(&c, 0, sizeof c);
-    build_active(&c, &o);
-    cs->mol = c.mol;
-    cs->rhf = c.rhf;
-    cs->as = c.as;
-    cs->fh = c.fh;
-    ao_integrals_free(&c.ints);
-    basis_free(&c.bs);
-    return 0;
-}
-
-void cas_system_free(CasSystem *cs)
-{
-    fermion_free(&cs->fh);
-    active_space_free(&cs->as);
-    rhf_free(&cs->rhf);
-}
 
 int cmd_prepare(int argc, char **argv)
 {
@@ -596,6 +627,88 @@ int cmd_pes(int argc, char **argv)
     return 0;
 }
 
+int cmd_sqd(int argc, char **argv)
+{
+    Opts o; opts_default(&o);
+    parse_opts(argc, argv, &o, NULL);
+    qc_print_banner("Sample-Based Quantum Diagonalization (SQD / QSCI)");
+    Ctx c; memset(&c, 0, sizeof c);
+    build_active(&c, &o);
+
+    FCIResult fci;
+    fci_solve(&fci, &c.fh, &c.as, o.electrons);
+
+    /* Prepare quantum state via ADAPT-VQE (or UCCSD) to sample from */
+    UCCSD u;
+    uccsd_build(&u, c.fh.nspin, o.electrons);
+    AdaptResult ar;
+    Circuit acirc;
+    adapt_vqe_optimize(&u, &c.fh.ham, o.adapt_max, o.adapt_tol, 0, &ar, &acirc);
+    StateVec psi;
+    sv_init(&psi, c.fh.nspin);
+    circ_simulate(&acirc, &psi);
+
+    SQDResult sqd;
+    double t0 = qc_wall_time();
+    sqd_run_simulated(&c.fh, &c.as, &psi, o.shots, o.noise, o.sc_iters, 42, &sqd);
+    double t_sqd = qc_wall_time() - t0;
+
+    printf("  system                     : %s (%s), CAS(%d,%d), %d qubits\n",
+           o.fcidump_in[0] ? o.fcidump_in : o.mol, o.basis, o.electrons, o.orbitals, c.fh.nspin);
+    printf("  shots & noise              : %d shots, %.2f%% per-qubit bit-flip error, %d SC recovery iterations\n",
+           o.shots, 100.0 * o.noise, o.sc_iters);
+    printf("  sector retention           : %d / %d shots in (N_a,N_b) sector (%d recovered by S-CORE)\n",
+           sqd.n_valid_sector, sqd.n_shots, sqd.n_recovered);
+    printf("  sampled subspace dimension : %d / %d total CAS determinants (%.2f ms)\n",
+           sqd.subspace_dim, fci.ndet, 1e3 * t_sqd);
+    print_rule();
+    printf("  RHF reference              : %.12f Eh\n", c.rhf.energy);
+    printf("  CAS-FCI exact reference    : %.12f Eh\n", fci.ground);
+    printf("  Noisy Estimator <H>        : %.12f Eh   (error %+.6f Eh)\n",
+           sqd.noisy_estimator_energy, sqd.noisy_estimator_energy - fci.ground);
+    printf("  SQD recovered energy       : %.12f Eh   (error %+.3e Eh)\n",
+           sqd.energy, sqd.energy - fci.ground);
+    print_rule();
+
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "scope", "Sample-Based Quantum Diagonalization (SQD) with configuration recovery");
+    cJSON_AddStringToObject(j, "molecule", o.mol);
+    cJSON_AddStringToObject(j, "basis", o.basis);
+    cJSON_AddNumberToObject(j, "active_electrons", o.electrons);
+    cJSON_AddNumberToObject(j, "active_orbitals", o.orbitals);
+    cJSON_AddNumberToObject(j, "qubits", c.fh.nspin);
+    cJSON_AddNumberToObject(j, "shots", o.shots);
+    cJSON_AddNumberToObject(j, "bitflip_prob", o.noise);
+    cJSON_AddNumberToObject(j, "sc_recovery_iters", o.sc_iters);
+    cJSON_AddNumberToObject(j, "valid_sector_shots", sqd.n_valid_sector);
+    cJSON_AddNumberToObject(j, "recovered_shots", sqd.n_recovered);
+    cJSON_AddNumberToObject(j, "subspace_dim", sqd.subspace_dim);
+    cJSON_AddNumberToObject(j, "fci_dim", fci.ndet);
+    cJSON_AddNumberToObject(j, "rhf_Eh", c.rhf.energy);
+    cJSON_AddNumberToObject(j, "fci_Eh", fci.ground);
+    cJSON_AddNumberToObject(j, "noisy_estimator_Eh", sqd.noisy_estimator_energy);
+    cJSON_AddNumberToObject(j, "sqd_energy_Eh", sqd.energy);
+    cJSON_AddNumberToObject(j, "sqd_minus_fci_Eh", sqd.energy - fci.ground);
+    char *s = cJSON_Print(j);
+    char jpath[1024];
+    snprintf(jpath, sizeof jpath, "%s/sqd_%s_CAS%d_%d.json", o.results_dir, o.mol, o.electrons, o.orbitals);
+    results_write_json(jpath, s);
+    free(s);
+    cJSON_Delete(j);
+
+    sqd_result_free(&sqd);
+    sv_free(&psi);
+    circ_free(&acirc);
+    adapt_result_free(&ar);
+    uccsd_free(&u);
+    fci_free(&fci);
+    fermion_free(&c.fh);
+    active_space_free(&c.as);
+    if (c.have_rhf) rhf_free(&c.rhf);
+    if (c.have_ints) { ao_integrals_free(&c.ints); basis_free(&c.bs); }
+    return 0;
+}
+
 /* Under `wsl --exec` no shell reports a crash, so say it ourselves (async-signal-safe). */
 static void crash_handler(int sig)
 {
@@ -614,10 +727,11 @@ int main(int argc, char **argv)
     if (argc < 2) {
         fprintf(stderr,
                 "usage: qchem-vqe <command> [options]\n"
-                "  prepare [--mol H2|HeH+|LiH|BeH2|H4] [--basis cc-pVQZ|cc-pVDZ|sto-3g] [--bond R]\n"
-                "  rhf [--mol NAME] [--basis NAME] [--bond R]\n"
-                "  active-space --electrons N --orbitals M [--first K] [--mol NAME] [--basis NAME]\n"
-                "  vqe --mode local [--ansatz uccsd|adapt] [--opt lbfgs|cobyla] [--mol NAME]\n"
+                "  prepare [--mol H2|HeH+|LiH|BeH2|H4 | --xyz FILE] [--basis cc-pVQZ|cc-pVDZ|sto-3g] [--bond R]\n"
+                "  rhf [--mol NAME | --xyz FILE] [--basis NAME] [--bond R]\n"
+                "  active-space --electrons N --orbitals M [--first K] [--fcidump FILE] [--fcidump-out FILE]\n"
+                "  vqe --mode local [--ansatz uccsd|adapt] [--opt lbfgs|cobyla] [--mol NAME | --fcidump FILE]\n"
+                "  sqd [--mol NAME | --fcidump FILE] [--shots N] [--noise P] [--sc-iters K]\n"
                 "  pes [--mol NAME] [--basis NAME] [--rmin R0 --rmax R1 --npts N]\n"
                 "  hardware list | inspect [--backend NAME] | preflight [--backend NAME]\n"
                 "  vqe --mode hardware [--submit [--yes]]\n"
@@ -632,6 +746,7 @@ int main(int argc, char **argv)
     else if (strcmp(cmd, "rhf") == 0) rc = cmd_rhf(argc - 2, argv + 2);
     else if (strcmp(cmd, "active-space") == 0) rc = cmd_active_space(argc - 2, argv + 2);
     else if (strcmp(cmd, "vqe") == 0) rc = cmd_vqe(argc - 2, argv + 2);
+    else if (strcmp(cmd, "sqd") == 0) rc = cmd_sqd(argc - 2, argv + 2);
     else if (strcmp(cmd, "pes") == 0) rc = cmd_pes(argc - 2, argv + 2);
     else if (strcmp(cmd, "hardware") == 0) rc = cmd_hardware(argc - 2, argv + 2);
     else if (strcmp(cmd, "job") == 0) rc = cmd_job(argc - 2, argv + 2);

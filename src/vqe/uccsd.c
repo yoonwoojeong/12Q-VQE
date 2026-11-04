@@ -20,11 +20,6 @@ static PauliSum op_product(int n, const int *orb, const int *dag)
 {
     PauliSum acc;
     pauli_sum_init(&acc, 0);
-    PauliSum one;
-    pauli_sum_init(&one, 0);
-    pauli_sum_add(&one, 0, 0, 1.0);
-    /* start from identity */
-    pauli_sum_init(&acc, 0);
     pauli_sum_add(&acc, 0, 0, 1.0);
     for (int k = 0; k < n; k++) {
         PauliSum L;
@@ -34,7 +29,6 @@ static PauliSum op_product(int n, const int *orb, const int *dag)
         pauli_sum_free(&L);
         acc = prod;
     }
-    pauli_sum_free(&one);
     return acc;
 }
 

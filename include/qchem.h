@@ -29,6 +29,10 @@ int qc_write_file(const char *path, const char *data, size_t len);
 double qc_wall_time(void);
 int qc_env_get(const char *name, char *buf, size_t buflen); /* 1 if set and non-empty */
 void qc_print_banner(const char *what);
+const char *qc_root_dir(char *buf, size_t n);
+const char *qc_data_dir(char *buf, size_t n);
+const char *qc_cache_dir(char *buf, size_t n);
+const char *qc_results_dir(char *buf, size_t n);
 
 /* ---------- molecule & basis (src/basis/basis.c) ---------- */
 typedef struct {
@@ -66,7 +70,9 @@ typedef struct {
 
 void mol_h2_setup(Molecule *m, double bond_angstrom, int charge, int mult);
 int mol_setup_by_name(Molecule *m, const char *name, double bond_angstrom);
+int mol_load_xyz(Molecule *m, const char *xyz_path, int charge, int mult);
 const char *elem_symbol(int Z);
+int elem_z_from_symbol(const char *sym);
 int basis_build(BasisSet *bs, const Molecule *mol, const char *nwchem_path, const char *name);
 void basis_free(BasisSet *bs);
 
@@ -120,6 +126,8 @@ int active_space_build(ActiveSpace *as, const AOInts *ints, const RHFResult *rhf
                        const Molecule *mol, int nelec_act, int norb, int first);
 double active_hf_energy(const ActiveSpace *as);     /* energy of the active-space HF determinant incl. ecore */
 void active_space_free(ActiveSpace *as);
+int fcidump_write(const ActiveSpace *as, const char *path);
+int fcidump_read(ActiveSpace *as, const char *path);
 
 /* ---------- fermion & Pauli algebra (src/fermion, one file per module) ---------- */
 typedef struct {
@@ -288,7 +296,7 @@ int adapt_vqe_optimize(const UCCSD *pool, const PauliSum *ham, int max_ops, doub
 void adapt_result_free(AdaptResult *r);
 void vqe_result_free(VQEResult *r);
 
-/* ---------- FCI (src/fci/fci.c) ---------- */
+/* ---------- FCI & SQD (src/fci/fci.c) ---------- */
 typedef struct {
     int ndet;
     double *eigvals;      /* all eigenvalues, ascending, including ecore */
@@ -297,9 +305,30 @@ typedef struct {
     uint32_t *dets;       /* occupation bitmasks over spin orbitals */
 } FCIResult;
 
+typedef struct {
+    int n_shots;
+    int n_valid_sector;
+    int n_recovered;
+    int subspace_dim;
+    double energy;
+    double noisy_estimator_energy;
+    uint32_t *dets;
+    double *coeffs;
+} SQDResult;
+
 int fci_solve(FCIResult *r, const FermionHam *fh, const ActiveSpace *as, int nelec);
+int fci_solve_subspace(FCIResult *r, const FermionHam *fh, const ActiveSpace *as,
+                       const uint32_t *dets, int ndet);
 double fci_pauli_restricted_ground(const FermionHam *fh, const FCIResult *fci);
 void fci_free(FCIResult *r);
+
+int sqd_from_bitstrings(const FermionHam *fh, const ActiveSpace *as,
+                        const uint32_t *raw_shots, int nshots, int sc_iters,
+                        SQDResult *res);
+int sqd_run_simulated(const FermionHam *fh, const ActiveSpace *as, const StateVec *psi,
+                      int nshots, double bitflip_prob, int sc_iters, unsigned seed,
+                      SQDResult *res);
+void sqd_result_free(SQDResult *r);
 
 /* ---------- results / metadata (src/common/results.c) ---------- */
 int results_write_json(const char *path, const char *json_text);
@@ -411,6 +440,7 @@ int ibm_job_submit_pubs(IBMSession *s, const char *backend, const char *const *q
 int ibm_job_get(IBMSession *s, const char *job_id, char **json);
 int ibm_job_results(IBMSession *s, const char *job_id, char **json);
 int base64_decode_f64(const char *b64, double **out, size_t *n);
+int ibm_parse_estimator_results_json(const char *res_json, double **ev_out, double **sd_out, size_t *nout);
 
 int layout_select(const IBMCalibration *cal, int nlogical, IBMLayout *out);
 int layout_compile(const Circuit *logical, const IBMCalibration *cal, IBMLayout *lay, Circuit *native_phys);
@@ -432,6 +462,7 @@ int cmd_rhf(int argc, char **argv);
 int cmd_active_space(int argc, char **argv);
 int cmd_vqe(int argc, char **argv);
 int cmd_pes(int argc, char **argv);
+int cmd_sqd(int argc, char **argv);
 int cmd_hardware(int argc, char **argv);
 int cmd_job(int argc, char **argv);
 
