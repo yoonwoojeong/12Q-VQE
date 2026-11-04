@@ -60,7 +60,7 @@ static double *exp_theta(const ExpConfig *cfg, const UCCSD *u, const PauliSum *h
     }
     printf("  VQE parameters   : optimising UCCSD with COBYLA on the simulator (about 30 s)...\n");
     fflush(stdout);
-    VQEOptions vo = {4000, 0.1, 1e-9, 0};
+    VQEOptions vo = {4000, 0.1, 1e-9, 0, 0};
     VQEResult vr;
     vqe_optimize_local(u, ham, &vo, &vr);
     memcpy(theta, vr.theta, sizeof(double) * (size_t)u->nexc);

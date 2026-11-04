@@ -130,6 +130,22 @@ const char *qc_root_dir(char *buf, size_t n)
     ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (len > 0) {
         exe[len] = 0;
+        /* Check standard FHS install prefix: <prefix>/bin/qchem-vqe -> <prefix>/share/qchem-vqe/data/basis */
+        char *bin_slash = strrchr(exe, '/');
+        if (bin_slash) {
+            *bin_slash = 0;
+            char *prefix_slash = strrchr(exe, '/');
+            if (prefix_slash && strcmp(prefix_slash, "/bin") == 0) {
+                char share_probe[1200];
+                snprintf(share_probe, sizeof share_probe, "%.*s/share/qchem-vqe/data/basis",
+                         (int)(prefix_slash - exe), exe);
+                if (dir_exists(share_probe)) {
+                    snprintf(buf, n, "%.*s/share/qchem-vqe", (int)(prefix_slash - exe), exe);
+                    return buf;
+                }
+            }
+            *bin_slash = '/';
+        }
         /* Walk up from executable path looking for data/basis */
         for (int up = 0; up < 4; up++) {
             char *slash = strrchr(exe, '/');

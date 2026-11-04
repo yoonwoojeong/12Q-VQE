@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qchem-vqe"
+version = "0.2.0"
+description = "Native C17 Quantum Chemistry VQE, ADAPT-VQE, and Sample-Based Quantum Diagonalization (SQD) Engine"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["quantum-chemistry", "vqe", "adapt-vqe", "sqd", "qsci", "fcidump", "ibm-quantum"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
