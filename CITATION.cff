@@ -6,9 +6,9 @@ authors:
   - given-names: Yoonwoo
     family-names: Jeong
     alias: yoonwoojeong
-repository-code: "https://github.com/yoonwoojeong/12Q-VQE"
-url: "https://github.com/yoonwoojeong/12Q-VQE"
-license: MIT
+repository-code: "https://github.com/yoonwoojeong/qchem-vqe"
+url: "https://github.com/yoonwoojeong/qchem-vqe"
+license: Apache-2.0
 version: 0.2.0
 date-released: "2026-04-11"
 keywords:

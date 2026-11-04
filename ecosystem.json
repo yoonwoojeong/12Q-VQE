@@ -1,8 +1,8 @@
 {
-  "name": "12Q-VQE",
-  "url": "https://github.com/yoonwoojeong/12Q-VQE",
-  "description": "High-performance C17 ab initio quantum chemistry engine (RHF, FCIDUMP, adjoint L-BFGS/ADAPT-VQE, Sample-Based Quantum Diagonalization, and Givens hardware compilation) with Python ctypes bindings and native OpenQASM 2.0 / IBM Quantum Estimator V2 integration.",
-  "licence": "MIT",
+  "name": "qchem-vqe",
+  "url": "https://github.com/yoonwoojeong/qchem-vqe",
+  "description": "C17 quantum chemistry engine (RHF, FCIDUMP, adjoint VQE, SQD) with OpenQASM 3 and IBM Quantum Estimator V2 support.",
+  "licence": "Apache-2.0",
   "labels": [
     "Applications",
     "Chemistry",

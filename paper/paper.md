@@ -63,6 +63,6 @@ On the 12-qubit $\text{H}_2$ (`cc-pVQZ`, `CAS(2e, 6o)`, 559 Pauli terms) and mul
 
 # Quality Control and Availability
 
-`12Q-VQE` is released under the MIT License and builds on Linux, WSL, and macOS via `Makefile`, `CMakeLists.txt`, `Dockerfile`, or `pip install .`. Continuous integration runs a 5-binary automated test suite (`test_chem`, `test_circuit`, `test_creds`, `test_experiment`, `test_ibm`) under both standard compilation and AddressSanitizer + UndefinedBehaviorSanitizer + LeakSanitizer (`make sanitize`) to guarantee zero memory leaks and numerical reproducibility.
+`12Q-VQE` (`qchem-vqe`) is released under the Apache-2.0 License and builds on Linux, WSL, and macOS via `Makefile`, `CMakeLists.txt`, `Dockerfile`, or `pip install .`. Continuous integration runs a 5-binary automated test suite (`test_chem`, `test_circuit`, `test_creds`, `test_experiment`, `test_ibm`) under both standard compilation and AddressSanitizer + UndefinedBehaviorSanitizer + LeakSanitizer (`make sanitize`) to guarantee zero memory leaks and numerical reproducibility.
 
 # References
